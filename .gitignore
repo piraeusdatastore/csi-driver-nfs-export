@@ -17,10 +17,10 @@
 .vscode
 
 # This is where the result of the go build goes
-/output*/
-/_output*/
-/_output
-/bin/nfsexportplugin
+output*/
+_output*/
+_output
+bin/nfsexportplugin
 
 # Emacs save files
 *~
@@ -41,7 +41,7 @@ cscope.*
 *.test
 
 # JUnit test output from ginkgo e2e tests
-/junit*.xml
+junit*.xml
 
 # Mercurial files
 **/.hg
@@ -53,10 +53,10 @@ cscope.*
 .tags*
 
 # Test artifacts produced by Jenkins jobs
-/_artifacts/
+_artifacts/
 
 # Go dependencies installed on Jenkins
-/_gopath/
+_gopath/
 
 # direnv .envrc files
 .envrc
@@ -65,8 +65,8 @@ cscope.*
 !\.drone\.sec
 
 # Godeps or dep workspace
-/Godeps/_workspace
+Godeps/_workspace
 
-/bazel-*
+bazel-*
 *.pyc
 profile.cov

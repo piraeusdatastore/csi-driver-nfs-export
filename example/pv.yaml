@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs-export
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-export-csi
+  mountOptions:
+    - nfsvers=4.1
+  csi:
+    driver: nfs-export.csi.k8s.io
+    readOnly: false
+    volumeHandle: unique-volumeid  # make sure it's a unique id in the cluster
+    volumeAttributes:
+      server: 10.6.254.9
+      share: /data/nfs/

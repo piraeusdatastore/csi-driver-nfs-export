@@ -1,0 +1,65 @@
+# nfs-ganesha pod
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: volume-nfs
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${nfs_sts}
+  namespace: volume-nfs
+  labels:
+    volume.io/nfs: ${nfs_sts}
+spec:
+  serviceName: ${nfs_sts}
+  replicas: 1
+  selector:
+    matchLabels:
+      volume.io/nfs: ${nfs_sts}
+  template:
+    metadata:
+      labels:
+        volume.io/nfs: ${nfs_sts}
+    spec:
+      restartPolicy: Always
+      # priorityClassName: system-node-critical
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 0
+      containers:
+      - name: exporter
+        image: daocloud.io/piraeus/volume-nfs-exporter:${image_tag}
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+            - SETPCAP
+            - DAC_READ_SEARCH
+        env:
+        - name: EXPORT_PATH
+          value: /${data_pv}
+        - name: PSEUDO_PATH
+          value: /${data_pv}
+        ports:
+        - containerPort: 2049
+          name: nfsbind
+          protocol: TCP
+        - containerPort: 111
+          name: rpc
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 2049
+          initialDelaySeconds: 5
+          periodSeconds: 2
+        volumeMounts:
+        - name: data
+          mountPath: /${data_pv}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: ${data_pvc}
+
+

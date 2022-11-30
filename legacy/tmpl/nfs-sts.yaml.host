@@ -1,0 +1,97 @@
+# Host kernel nfs-server 
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: volume-nfs
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${nfs_sts}
+  namespace: volume-nfs
+  labels:
+    volume.io/nfs: ${nfs_sts}
+spec:
+  serviceName: ${nfs_sts}
+  replicas: 1
+  selector:
+    matchLabels:
+      volume.io/nfs: ${nfs_sts}
+  template:
+    metadata:
+      labels:
+        volume.io/nfs: ${nfs_sts}
+    spec:
+      restartPolicy: Always
+      # priorityClassName: system-node-critical
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 0
+      containers:
+      - name: exporter
+        image: daocloud.io/piraeus/volume-nfs-exporter
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        resources:
+          limits:
+            cpu: '200m'
+            memory: '200Mi'
+        env:
+        - name: pod_name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: pod_uid
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: nfs_ns
+          value: ${nfs_ns}
+        - name: nfs_pvc
+          value: ${nfs_pvc}
+        - name: nfs_pv
+          value: ${nfs_pv}
+        - name: data_pvc
+          value: ${data_pvc}
+        - name: data_pv
+          value: ${data_pv}
+        - name: export_path
+          value: /var/lib/nfs/volume/${data_pv}
+        - name: export_opt
+          value: rw,insecure,no_root_squash,no_subtree_check,crossmnt
+        # - name: export_ip
+        #   value: "0.0.0.0"
+        - name: export_ip
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        readinessProbe:
+          tcpSocket:
+            port: 2049
+          periodSeconds: 1
+        lifecycle:
+            preStop:
+              exec:
+                command: [ "prestop.sh" ]
+        volumeMounts:
+        - mountPath: /var/lib/nfs/volume
+          name: nfs
+          mountPropagation: Bidirectional
+        - name: data
+          mountPath: /var/lib/nfs/volume/${data_pv}
+        - name: systemd
+          mountPath: /etc/systemd/system
+      volumes:
+      - name: nfs
+        hostPath:
+          path: /var/lib/nfs/volume
+      - name: data
+        persistentVolumeClaim:
+          claimName: ${data_pvc}
+      - name: systemd
+        hostPath:
+          path: /etc/systemd/system
+
+

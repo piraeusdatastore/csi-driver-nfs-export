@@ -21,6 +21,9 @@ import (
 	"os"
 	"k8s.io/klog/v2"
 	"github.com/rafflescity/csi-driver-nfs-export/pkg/nfsexport"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 var (
@@ -54,6 +57,32 @@ func handle() {
 		MountPermissions: *mountPermissions,
 		WorkingMountDir:  *workingMountDir,
 	}
-	d := nfsexport.NewDriver(&driverOptions)
+	d := nfsexport.NewDriver(&driverOptions, getKubeClient())
 	d.Run(false)
+}
+
+func getKubeClient()(*kubernetes.Clientset) {
+	// Connect to Kubernetes
+	kubeconfig := os.Getenv("KUBECONFIG")
+	var config *rest.Config
+	if kubeconfig != "" {
+		// Create an OutOfClusterConfig 
+		var err error
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			klog.Fatalf("Failed to create kubeconfig: %v", err)
+		}
+	} else {
+		// Create an InClusterConfig 
+		var err error
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			klog.Fatalf("Failed to create config: %v", err)
+		}
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("Failed to create client: %v", err)
+	}
+	return clientset
 }

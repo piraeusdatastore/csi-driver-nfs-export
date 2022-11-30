@@ -89,6 +89,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if parameters == nil {
 		parameters = make(map[string]string)
 	}
+
 	// // validate parameters (case-insensitive)
 	// for k, v := range parameters {
 	// 	switch strings.ToLower(k) {
@@ -111,7 +112,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	// 	}
 	// }
 
-	nfsVol, err := newNFSVolume(name, reqCapacity, parameters)
+	nfsVol, err := newNfsExportVolume(name, reqCapacity, parameters, cs.Driver.clientSet)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -148,7 +149,10 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		Volume: &csi.Volume{
 			VolumeId:      nfsVol.id,
 			CapacityBytes: 0, // by setting it to zero, Provisioner will use PVC requested size as PV size
-			VolumeContext: parameters,
+			VolumeContext: map[string]string{
+				"server" : nfsVol.server, 
+				"share"  : nfsVol.baseDir,
+			},
 		},
 	}, nil
 }

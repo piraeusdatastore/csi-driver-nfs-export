@@ -1,0 +1,23 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: volume-nfs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${nfs_sts}
+  namespace: volume-nfs
+  labels:
+    volume.io/nfs: ${nfs_sts}
+spec:
+  selector:
+      volume.io/nfs: ${nfs_sts}
+  type: ClusterIP
+  ports:
+  - name: nfs
+    port: 2049
+    protocol: TCP
+  - name: rpcbind
+    port: 111
+    protocol: TCP

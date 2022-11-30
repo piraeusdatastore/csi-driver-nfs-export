@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-nfs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: deployment-nfs
+  template:
+    metadata:
+      name: deployment-nfs
+      labels:
+        name: deployment-nfs
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: deployment-nfs
+          image: daocloud.io/nginx
+          command:
+            - "/bin/bash"
+            - "-c"
+            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+          volumeMounts:
+            - name: nfs
+              mountPath: "/mnt/nfs"
+      volumes:
+        - name: nfs
+          persistentVolumeClaim:
+            claimName: pvc-nfs-export-dynamic

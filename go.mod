@@ -90,6 +90,7 @@ require (
 	k8s.io/cloud-provider v0.23.3 // indirect
 	k8s.io/component-base v0.23.3 // indirect
 	k8s.io/component-helpers v0.23.3 // indirect
+	k8s.io/klog v1.0.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20211115234752-e816edb12b65 // indirect
 	k8s.io/kubectl v0.0.0 // indirect
 	k8s.io/kubelet v0.0.0 // indirect

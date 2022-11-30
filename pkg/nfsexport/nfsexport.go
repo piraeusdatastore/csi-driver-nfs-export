@@ -22,6 +22,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"k8s.io/klog/v2"
 	mount "k8s.io/mount-utils"
+	"k8s.io/client-go/kubernetes"
 )
 
 // DriverOptions defines driver parameters specified in driver deployment
@@ -46,10 +47,13 @@ type Driver struct {
 	cscap       []*csi.ControllerServiceCapability
 	nscap       []*csi.NodeServiceCapability
 	volumeLocks *VolumeLocks
+
+	// kuberntes clientset
+	clientSet *kubernetes.Clientset
 }
 
 const (
-	DefaultDriverName = "nfs-export.csi.k8s.io"
+	DefaultDriverName = "nfs.csi.k8s.io"
 	// Address of the NFS server
 	paramServer = "server"
 	// Base directory of the NFS server to create volumes under.
@@ -68,7 +72,7 @@ const (
 	pvNameMetadata        = "${pv.metadata.name}"
 )
 
-func NewDriver(options *DriverOptions) *Driver {
+func NewDriver(options *DriverOptions, clientset *kubernetes.Clientset) *Driver {
 	klog.V(2).Infof("Driver: %v version: %v", options.DriverName, driverVersion)
 
 	n := &Driver{
@@ -78,6 +82,10 @@ func NewDriver(options *DriverOptions) *Driver {
 		endpoint:         options.Endpoint,
 		mountPermissions: options.MountPermissions,
 		workingMountDir:  options.WorkingMountDir,
+
+		clientSet: 		  clientset,
+
+		
 	}
 
 	n.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{

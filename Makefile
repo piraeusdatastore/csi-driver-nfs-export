@@ -23,3 +23,9 @@ run-local-provisioner:
 
 run-local-plugin:
 	go run ./cmd/nfsexportplugin/ -v 5 --endpoint unix:///usr/local/var/run/csi/socket
+
+test:
+	kubectl apply -f example/pvc-dynamic.yaml
+
+untest:
+	kubectl delete -f example/pvc-dynamic.yaml

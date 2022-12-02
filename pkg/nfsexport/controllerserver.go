@@ -56,6 +56,29 @@ type nfsVolume struct {
 	uuid string
 }
 
+// Create NFS Export
+
+type nfsExport struct {
+	FrontendPvcNs	 	string
+	FrontendPvcName	 	string
+	FrontendPvName		string
+
+	BackendScName 		string
+
+	BackendNs 		    string
+	BackendPvcName 		string
+	BackendPvName		string
+
+	BackendPodName 		string
+	ExporterImage 	    string
+
+	BackendSvcName		string
+	BackendClusterIp    string
+
+	Size				int64
+	LogID				string
+}
+
 // Ordering of elements in the CSI volume id.
 // ID is of the form {server}/{baseDir}/{subDir}.
 // TODO: This volume id format limits baseDir and
@@ -112,7 +135,30 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	// 	}
 	// }
 
-	nfsVol, err := newNfsExportVolume(name, reqCapacity, parameters, cs.Driver.clientSet)
+	frontendPvName := name
+
+	neDef := &nfsExport{
+		FrontendPvcNs:	 	"",
+		FrontendPvcName:	"",
+		FrontendPvName:		frontendPvName,
+	
+		BackendScName: 		parameters["backendStorageClass"],
+	
+		BackendNs: 		    "csi-nfs-export",
+		BackendPvcName: 	frontendPvName + "-backend",
+		BackendPvName:		"",
+
+		BackendPodName: 	frontendPvName + "-backend",
+		ExporterImage: 		parameters["nfsExporterImage"],
+	
+		BackendSvcName:		frontendPvName + "-backend",
+		BackendClusterIp:   "",
+
+		Size:				reqCapacity,
+		LogID:				"["  + "/"  + "] ",
+	}
+
+	nfsVol, err := newNfsExportVolume(neDef, cs.Driver.clientSet)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -312,12 +358,12 @@ func (cs *ControllerServer) internalUnmount(ctx context.Context, vol *nfsVolume)
 }
 
 // newNFSVolume Convert VolumeCreate parameters to an nfsVolume
-func newNFSVolume(name string, size int64, params map[string]string) (*nfsVolume, error) {
+func newNFSVolume(name string, size int64, parameters map[string]string) (*nfsVolume, error) {
 	var server, baseDir, subDir string
 	subDirReplaceMap := map[string]string{}
 
 	// validate parameters (case-insensitive)
-	for k, v := range params {
+	for k, v := range parameters {
 		switch strings.ToLower(k) {
 		case paramServer:
 			server = v

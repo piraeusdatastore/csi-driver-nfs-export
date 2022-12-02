@@ -11,85 +11,23 @@ import (
 	"k8s.io/klog"
 )
 
-type nfsExport struct {
-	FrontendPvcNs	 	string
-	FrontendPvcName	 	string
-	FrontendPvName		string
+func newNfsExportVolume(e *nfsExport, c *kubernetes.Clientset) (*nfsVolume, error) {
 
-	BackendScName 		string
-
-	BackendNs 		    string
-	BackendPvcName 		string
-	BackendPvName		string
-
-	BackendPodName 		string
-	ExporterImage 	    string
-
-	BackendSvcName		string
-	BackendClusterIp    string
-
-	Size				int64
-	LogID				string
-}
-
-func newNfsExportVolume(frontendPvName string, size int64, params map[string]string, c *kubernetes.Clientset) (*nfsVolume, error) {
-
-	vneDef := &nfsExport{
-		FrontendPvcNs:	 	"",
-		FrontendPvcName:	"",
-		FrontendPvName:		frontendPvName,
-	
-		BackendScName: 		params["backendStorageClass"],
-	
-		BackendNs: 		    "csi-nfs-export",
-		BackendPvcName: 	frontendPvName + "-backend",
-		BackendPvName:		"",
-
-		BackendPodName: 	frontendPvName + "-backend",
-		ExporterImage: 		params["nfsExporterImage"],
-	
-		BackendSvcName:		frontendPvName + "-backend",
-		BackendClusterIp:   "",
-
-		Size:				size,
-		LogID:				"["  + "/"  + "] ",
-	}
-
-
-
-	vne := createNfsExport(vneDef, c)
-
-
-	vol := &nfsVolume{
-		server:  vne.BackendClusterIp,
-		baseDir: "/",
-		size:    size,
-	}
-	vol.id = getVolumeIDFromNfsVol(vol)
-	return vol, nil
-}
-
-
-func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
-	klog.Infof( v.LogID + "Backend SC is \"%s\"", v.BackendScName )
-	klog.Infof( v.LogID + "NFS Exporter Image is \"%s\"", v.ExporterImage )
-
-	if v.BackendClusterIp != "" {
-		return v
-	}
+	klog.Infof( e.LogID + "Backend SC is \"%s\"", e.BackendScName )
+	klog.Infof( e.LogID + "NFS Exporter Image is \"%s\"", e.ExporterImage )
 
 	// Create backend PVC
-	klog.Infof(v.LogID + "Creating backend PVC \"%s\"", v.BackendPvcName )
-	klog.Infof( v.LogID + "Backend PVC size is \"%d\"", v.Size )
+	klog.Infof(e.LogID + "Creating backend PVC \"%s\"", e.BackendPvcName )
+	klog.Infof( e.LogID + "Backend PVC size is \"%d\"", e.Size )
 
-	resourceStorage := resource.NewQuantity(v.Size, resource.BinarySI)
+	resourceStorage := resource.NewQuantity(e.Size, resource.BinarySI)
 
 	backendPvcDef := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: v.BackendPvcName,
+			Name: e.BackendPvcName,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			StorageClassName: &v.BackendScName,
+			StorageClassName: &e.BackendScName,
 			AccessModes: []corev1.PersistentVolumeAccessMode{
 				corev1.ReadWriteOnce,
 			},
@@ -101,32 +39,32 @@ func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
 		},
 	}
 
-    backendPvc, err := c.CoreV1().PersistentVolumeClaims(v.BackendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
+    backendPvc, err := c.CoreV1().PersistentVolumeClaims(e.BackendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
 	if err != nil {
 		panic(err)
 	}
 
 	backendPvcUid := backendPvc.ObjectMeta.UID
-	klog.Infof(v.LogID + "Backend PVC uid is \"%s\"", backendPvcUid )
-	v.BackendPvName = "pvc-" + string( backendPvcUid )
+	klog.Infof(e.LogID + "Backend PVC uid is \"%s\"", backendPvcUid )
+	e.BackendPvName = "pvc-" + string( backendPvcUid )
 
 	// Create frontend SVC
-	klog.Infof(v.LogID + "Frontend SVC \"%s\"", v.BackendSvcName )
+	klog.Infof(e.LogID + "Frontend SVC \"%s\"", e.BackendSvcName )
 	backendSvcDef := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: v.BackendSvcName,
+			Name: e.BackendSvcName,
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "v1",
 					Kind:               "PersistentVolumeClaim",
-					Name:               v.BackendPvcName,
+					Name:               e.BackendPvcName,
 					UID:                backendPvcUid,
 				},
 			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-					"nfsexport.rafflescity.io/frontend-pv": v.FrontendPvName,
+					"nfs-export.csi.k8s.io/frontend-pv": e.FrontendPvName,
 				},
 			Type: corev1.ServiceTypeClusterIP,
 			Ports: []corev1.ServicePort{
@@ -149,37 +87,40 @@ func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
 		},
 	}
 
-	_, err = c.CoreV1().Services(v.BackendNs).Create(context.TODO(), backendSvcDef, metav1.CreateOptions{})
+	_, err = c.CoreV1().Services(e.BackendNs).Create(context.TODO(), backendSvcDef, metav1.CreateOptions{})
 	if err != nil {
 		panic(err)
 	}
 
-	v.BackendClusterIp = ""
+	e.BackendClusterIp = ""
 	for {
 		time.Sleep(1 * time.Second)
-		backendSvc, err := c.CoreV1().Services(v.BackendNs).Get(context.TODO(), v.BackendSvcName, metav1.GetOptions{})
+		backendSvc, err := c.CoreV1().Services(e.BackendNs).Get(context.TODO(), e.BackendSvcName, metav1.GetOptions{})
 		if err == nil {
-			v.BackendClusterIp = backendSvc.Spec.ClusterIP;
-			klog.Infof(v.LogID + "Frontend IP is \"%s\"", v.BackendClusterIp)
+			e.BackendClusterIp = backendSvc.Spec.ClusterIP;
+			klog.Infof(e.LogID + "Frontend IP is \"%s\"", e.BackendClusterIp)
 		} else {
-			klog.Infof(v.LogID + "Waiting for NFS SVC to spawn: \"%s\"", v.BackendSvcName)
+			klog.Infof(e.LogID + "Waiting for NFS SVC to spawn: \"%s\"", e.BackendSvcName)
 		}
-		if v.BackendClusterIp != "" {
+		if e.BackendClusterIp != "" {
 			break
 		} 
 	}
 
 	// Create frontend Pod to connect frontend SVC with backend PVC
-	klog.Infof(v.LogID + "Creating frontend pod: \"%s\"", v.BackendPodName)
+	klog.Infof(e.LogID + "Creating frontend pod: \"%s\"", e.BackendPodName)
 
 	backendPodDef := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: v.BackendPodName,
+			Name: e.BackendPodName,
+			Labels: map[string]string{
+				"nfs-export.csi.k8s.io/frontend-pv": e.FrontendPvName,
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "v1",
 					Kind:               "PersistentVolumeClaim",
-					Name:               v.BackendPvcName,
+					Name:               e.BackendPvcName,
 					UID:                backendPvcUid,
 				},
 			},
@@ -188,7 +129,7 @@ func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
 			Containers: []corev1.Container{
 				{
 					Name:  "export",
-					Image: v.ExporterImage,
+					Image: e.ExporterImage,
 					ImagePullPolicy: corev1.PullAlways,
 					SecurityContext: &corev1.SecurityContext{
 						Capabilities: &corev1.Capabilities{
@@ -229,7 +170,7 @@ func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
 					Name: "data",
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: v.BackendPvcName,
+							ClaimName: e.BackendPvcName,
 						},
 					},
 				},
@@ -237,26 +178,16 @@ func createNfsExport(v *nfsExport, c *kubernetes.Clientset) *nfsExport  {
 		},
 	}
 
-	_, err = c.CoreV1().Pods(v.BackendNs).Create(context.TODO(), backendPodDef, metav1.CreateOptions{})
+	_, err = c.CoreV1().Pods(e.BackendNs).Create(context.TODO(), backendPodDef, metav1.CreateOptions{})
 	if err != nil {
 		panic(err)
 	}
 
-	// Wait until NFS Pod is ready
-	// backendPodStatus := corev1.PodUnknown
-	// for {
-	// 	time.Sleep(1 * time.Second)
-	// 	backendPod, err := c.CoreV1().Pods(v.BackendNs).Get(context.TODO(), v.BackendPodName, metav1.GetOptions{})
-	// 	if err == nil {
-	// 		backendPodStatus = backendPod.Status.Phase;
-	// 		klog.Infof( v.LogID + "Frontend Pod status is: \"%s\"", backendPodStatus )
-	// 	} else {
-	// 		klog.Infof( v.LogID + "Waiting for frontend Pod to spawn: \"%s\"", v.BackendPodName )
-	// 	}
-	// 	if backendPodStatus == corev1.PodRunning {
-	// 		break
-	// 	}
-	// }
-
-	return v
+	vol := &nfsVolume{
+		server:  e.BackendClusterIp,
+		baseDir: "/",
+		size:    e.Size,
+	}
+	vol.id = getVolumeIDFromNfsVol(vol)
+	return vol, nil
 }

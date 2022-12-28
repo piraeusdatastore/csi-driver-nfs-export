@@ -19,9 +19,8 @@ package nfsexport
 import (
 	"fmt"
 	// "os"
-	"path/filepath"
-	"regexp"
-	// "strconv"
+	//"path/filepath"
+	//"regexp"
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -30,6 +29,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	"k8s.io/klog/v2"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	// "k8s.io/client-go/kubernetes"
 )
 
 // ControllerServer controller server setting
@@ -37,47 +40,26 @@ type ControllerServer struct {
 	Driver *Driver
 }
 
-// nfsVolume is an internal representation of a volume
-// created by the provisioner.
-type nfsVolume struct {
-	// Volume id
-	id string
-	// Address of the NFS server.
-	// Matches paramServer.
-	server string
-	// Base directory of the NFS server to create volumes under
-	// Matches paramShare.
-	baseDir string
-	// Subdirectory of the NFS server to create volumes under
-	subDir string
-	// size of volume
-	size int64
-	// pv name when subDir is not empty
-	uuid string
-}
+// // nfsVolume is an internal representation of a volume
+// // created by the provisioner.
+// type nfsVolume struct {
+// 	// Volume id
+// 	id string
+// 	// Address of the NFS server.
+// 	// Matches paramServer.
+// 	server string
+// 	// Base directory of the NFS server to create volumes under
+// 	// Matches paramShare.
+// 	baseDir string
+// 	// Subdirectory of the NFS server to create volumes under
+// 	subDir string
+// 	// size of volume
+// 	size int64
+// 	// pv name when subDir is not empty
+// 	uuid string
+// }
 
-// Create NFS Export
 
-type nfsExport struct {
-	FrontendPvcNs	 	string
-	FrontendPvcName	 	string
-	FrontendPvName		string
-
-	BackendScName 		string
-
-	BackendNs 		    string
-	BackendPvcName 		string
-	BackendPvName		string
-
-	BackendPodName 		string
-	ExporterImage 	    string
-
-	BackendSvcName		string
-	BackendClusterIp    string
-
-	Size				int64
-	LogID				string
-}
 
 // Ordering of elements in the CSI volume id.
 // ID is of the form {server}/{baseDir}/{subDir}.
@@ -93,6 +75,14 @@ const (
 	totalIDElements // Always last
 )
 
+type backendPvc struct {
+	name string
+	namespace string
+	size int64
+	StorageClass string
+	image string
+}
+
 const separator = "#"
 
 // CreateVolume create a volume
@@ -107,97 +97,81 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	// mountPermissions := cs.Driver.mountPermissions
-	reqCapacity := req.GetCapacityRange().GetRequiredBytes()
+	size := req.GetCapacityRange().GetRequiredBytes()
+	
 	parameters := req.GetParameters()
 	if parameters == nil {
 		parameters = make(map[string]string)
 	}
 
-	// // validate parameters (case-insensitive)
-	// for k, v := range parameters {
-	// 	switch strings.ToLower(k) {
-	// 	case paramServer:
-	// 	case paramShare:
-	// 	case paramSubDir:
-	// 	case pvcNamespaceKey:
-	// 	case pvcNameKey:
-	// 	case pvNameKey:
-	// 		// no op
-	// 	case mountPermissionsField:
-	// 		if v != "" {
-	// 			var err error
-	// 			if mountPermissions, err = strconv.ParseUint(v, 8, 32); err != nil {
-	// 				return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("invalid mountPermissions %s in storage class", v))
-	// 			}
-	// 		}
-	// 	default:
-	// 		return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("invalid parameter %q in storage class", k))
-	// 	}
-	// }
+    var backendSc, backendImg, backendNs string
 
-	frontendPvName := name
-
-	neDef := &nfsExport{
-		FrontendPvcNs:	 	"",
-		FrontendPvcName:	"",
-		FrontendPvName:		frontendPvName,
-	
-		BackendScName: 		parameters["backendStorageClass"],
-	
-		BackendNs: 		    "csi-nfs-export",
-		BackendPvcName: 	frontendPvName + "-backend",
-		BackendPvName:		"",
-
-		BackendPodName: 	frontendPvName + "-backend",
-		ExporterImage: 		parameters["nfsExporterImage"],
-	
-		BackendSvcName:		frontendPvName + "-backend",
-		BackendClusterIp:   "",
-
-		Size:				reqCapacity,
-		LogID:				"["  + "/"  + "] ",
+	// validate parameters (case-insensitive)
+	for k, v := range parameters {
+		switch strings.ToLower(k) {
+		case paramBackendStorageClass:
+			backendSc = v
+		case paramBackendPodImage:
+			backendImg = v
+		case paramBackendNamespace:
+			backendNs = v
+		case pvcNamespaceKey:
+		case pvcNameKey:
+		case pvNameKey:
+			// no op
+		case mountPermissionsField:
+			// if v != "" {
+			// 	var err error
+			// 	if mountPermissions, err = strconv.ParseUint(v, 8, 32); err != nil {
+			// 		return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("invalid mountPermissions %s in storage class", v))
+			// 	}
+			// }
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("invalid parameter %q in storage class", k))
+		}
 	}
 
-	nfsVol, err := newNfsExportVolume(neDef, cs.Driver.clientSet)
+	backendPvcName := name + "-backend"
+
+	klog.V(2).Infof("Backend StorageClass  is: %s", backendSc)
+	klog.V(2).Infof("Backend Pod Image is: %s", backendImg)
+	klog.V(2).Infof("Backend Namespace is: %s", backendNs)
+	klog.V(2).Infof("Backend PVC Name is: %s", backendPvcName )
+
+	resourceStorage := resource.NewQuantity(size, resource.BinarySI)
+
+	backendPvcDef := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: backendPvcName,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: &backendSc,
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteOnce,
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: map[corev1.ResourceName]resource.Quantity{
+					corev1.ResourceStorage: *resourceStorage,
+				},
+			},
+		},
+	}
+
+    _, err := cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
+
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		panic(err)
 	}
 
-	// var volCap *csi.VolumeCapability
-	// if len(req.GetVolumeCapabilities()) > 0 {
-	// 	volCap = req.GetVolumeCapabilities()[0]
-	// }
-	// // Mount nfs base share so we can create a subdirectory
-	// if err = cs.internalMount(ctx, nfsVol, parameters, volCap); err != nil {
-	// 	return nil, status.Errorf(codes.Internal, "failed to mount nfs server: %v", err.Error())
-	// }
-	// defer func() {
-	// 	if err = cs.internalUnmount(ctx, nfsVol); err != nil {
-	// 		klog.Warningf("failed to unmount nfs server: %v", err.Error())
-	// 	}
-	// }()
-
-	// // Create subdirectory under base-dir
-	// internalVolumePath := getInternalVolumePath(cs.Driver.workingMountDir, nfsVol)
-	// if err = os.Mkdir(internalVolumePath, 0777); err != nil && !os.IsExist(err) {
-	// 	return nil, status.Errorf(codes.Internal, "failed to make subdirectory: %v", err.Error())
-	// }
-
-	// if mountPermissions > 0 {
-	// 	// Reset directory permissions because of umask problems
-	// 	if err = os.Chmod(internalVolumePath, os.FileMode(mountPermissions)); err != nil {
-	// 		klog.Warningf("failed to chmod subdirectory: %v", err.Error())
-	// 	}
-	// }
-
-	setKeyValueInMap(parameters, paramSubDir, nfsVol.subDir)
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      nfsVol.id,
+			VolumeId:      "E536A5A3-7BB0-4D5E-9D0D-3B2ACBF1AC98",
 			CapacityBytes: 0, // by setting it to zero, Provisioner will use PVC requested size as PV size
 			VolumeContext: map[string]string{
-				"server" : nfsVol.server, 
-				"share"  : nfsVol.baseDir,
+				"backendVolumeClaim"  : backendPvcName,
+				"backendNamespace" 	  : backendNs,
+				"backendStorageClass" : backendSc,
+				"backendPodImage"     : backendImg,
 			},
 		},
 	}, nil
@@ -209,44 +183,6 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	if volumeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is empty")
 	}
-	// nfsVol, err := getNfsVolFromID(volumeID)
-	// if err != nil {
-	// 	// An invalid ID should be treated as doesn't exist
-	// 	klog.Warningf("failed to get nfs volume for volume id %v deletion: %v", volumeID, err)
-	// 	return &csi.DeleteVolumeResponse{}, nil
-	// }
-
-	// var volCap *csi.VolumeCapability
-	// mountOptions := getMountOptions(req.GetSecrets())
-	// if mountOptions != "" {
-	// 	klog.V(2).Infof("DeleteVolume: found mountOptions(%s) for volume(%s)", mountOptions, volumeID)
-	// 	volCap = &csi.VolumeCapability{
-	// 		AccessType: &csi.VolumeCapability_Mount{
-	// 			Mount: &csi.VolumeCapability_MountVolume{
-	// 				MountFlags: []string{mountOptions},
-	// 			},
-	// 		},
-	// 	}
-	// }
-
-	// mount nfs base share so we can delete the subdirectory
-	// if err = cs.internalMount(ctx, nfsVol, nil, volCap); err != nil {
-	// 	return nil, status.Errorf(codes.Internal, "failed to mount nfs server: %v", err.Error())
-	// }
-	// defer func() {
-	// 	if err = cs.internalUnmount(ctx, nfsVol); err != nil {
-	// 		klog.Warningf("failed to unmount nfs server: %v", err.Error())
-	// 	}
-	// }()
-
-	// // delete subdirectory under base-dir
-	// internalVolumePath := getInternalVolumePath(cs.Driver.workingMountDir, nfsVol)
-
-	// klog.V(2).Infof("Removing subdirectory at %v", internalVolumePath)
-	// if err = os.RemoveAll(internalVolumePath); err != nil {
-	// 	return nil, status.Errorf(codes.Internal, "failed to delete subdirectory: %v", err.Error())
-	// }
-
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
@@ -310,121 +246,6 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-// Mount nfs server at base-dir
-func (cs *ControllerServer) internalMount(ctx context.Context, vol *nfsVolume, volumeContext map[string]string, volCap *csi.VolumeCapability) error {
-	if volCap == nil {
-		volCap = &csi.VolumeCapability{
-			AccessType: &csi.VolumeCapability_Mount{
-				Mount: &csi.VolumeCapability_MountVolume{},
-			},
-		}
-	}
-
-	sharePath := filepath.Join(string(filepath.Separator) + vol.baseDir)
-	targetPath := getInternalMountPath(cs.Driver.workingMountDir, vol)
-
-	volContext := map[string]string{
-		paramServer: vol.server,
-		paramShare:  sharePath,
-	}
-	for k, v := range volumeContext {
-		// don't set subDir field since only nfs-server:/share should be mounted in CreateVolume/DeleteVolume
-		if strings.ToLower(k) != paramSubDir {
-			volContext[k] = v
-		}
-	}
-
-	klog.V(2).Infof("internally mounting %s:%s at %s", vol.server, sharePath, targetPath)
-	_, err := cs.Driver.ns.NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
-		TargetPath:       targetPath,
-		VolumeContext:    volContext,
-		VolumeCapability: volCap,
-		VolumeId:         vol.id,
-	})
-	return err
-}
-
-// Unmount nfs server at base-dir
-func (cs *ControllerServer) internalUnmount(ctx context.Context, vol *nfsVolume) error {
-	targetPath := getInternalMountPath(cs.Driver.workingMountDir, vol)
-
-	// Unmount nfs server at base-dir
-	klog.V(4).Infof("internally unmounting %v", targetPath)
-	_, err := cs.Driver.ns.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{
-		VolumeId:   vol.id,
-		TargetPath: targetPath,
-	})
-	return err
-}
-
-// newNFSVolume Convert VolumeCreate parameters to an nfsVolume
-func newNFSVolume(name string, size int64, parameters map[string]string) (*nfsVolume, error) {
-	var server, baseDir, subDir string
-	subDirReplaceMap := map[string]string{}
-
-	// validate parameters (case-insensitive)
-	for k, v := range parameters {
-		switch strings.ToLower(k) {
-		case paramServer:
-			server = v
-		case paramShare:
-			baseDir = v
-		case paramSubDir:
-			subDir = v
-		case pvcNamespaceKey:
-			subDirReplaceMap[pvcNamespaceMetadata] = v
-		case pvcNameKey:
-			subDirReplaceMap[pvcNameMetadata] = v
-		case pvNameKey:
-			subDirReplaceMap[pvNameMetadata] = v
-		}
-	}
-
-	if server == "" {
-		return nil, fmt.Errorf("%v is a required parameter", paramServer)
-	}
-
-	vol := &nfsVolume{
-		server:  server,
-		baseDir: baseDir,
-		size:    size,
-	}
-	if subDir == "" {
-		// use pv name by default if not specified
-		vol.subDir = name
-	} else {
-		// replace pv/pvc name namespace metadata in subDir
-		vol.subDir = replaceWithMap(subDir, subDirReplaceMap)
-		// make volume id unique if subDir is provided
-		vol.uuid = name
-	}
-	vol.id = getVolumeIDFromNfsVol(vol)
-	return vol, nil
-}
-
-// getInternalMountPath: get working directory for CreateVolume and DeleteVolume
-func getInternalMountPath(workingMountDir string, vol *nfsVolume) string {
-	if vol == nil {
-		return ""
-	}
-	mountDir := vol.uuid
-	if vol.uuid == "" {
-		mountDir = vol.subDir
-	}
-	return filepath.Join(workingMountDir, mountDir)
-}
-
-// Get internal path where the volume is created
-// The reason why the internal path is "workingDir/subDir/subDir" is because:
-//   - the semantic is actually "workingDir/volId/subDir" and volId == subDir.
-//   - we need a mount directory per volId because you can have multiple
-//     CreateVolume calls in parallel and they may use the same underlying share.
-//     Instead of refcounting how many CreateVolume calls are using the same
-//     share, it's simpler to just do a mount per request.
-func getInternalVolumePath(workingMountDir string, vol *nfsVolume) string {
-	return filepath.Join(getInternalMountPath(workingMountDir, vol), vol.subDir)
-}
-
 // Given a nfsVolume, return a CSI volume id
 func getVolumeIDFromNfsVol(vol *nfsVolume) string {
 	idElements := make([]string, totalIDElements)
@@ -433,45 +254,6 @@ func getVolumeIDFromNfsVol(vol *nfsVolume) string {
 	idElements[idSubDir] = strings.Trim(vol.subDir, "/")
 	idElements[idUUID] = vol.uuid
 	return strings.Join(idElements, separator)
-}
-
-// Given a CSI volume id, return a nfsVolume
-// sample volume Id:
-//
-//	  new volumeID:
-//		    nfs-server.default.svc.cluster.local#share#pvc-4bcbf944-b6f7-4bd0-b50f-3c3dd00efc64
-//		    nfs-server.default.svc.cluster.local#share#subdir#pvc-4bcbf944-b6f7-4bd0-b50f-3c3dd00efc64
-//	  old volumeID: nfs-server.default.svc.cluster.local/share/pvc-4bcbf944-b6f7-4bd0-b50f-3c3dd00efc64
-func getNfsVolFromID(id string) (*nfsVolume, error) {
-	var server, baseDir, subDir, uuid string
-	segments := strings.Split(id, separator)
-	if len(segments) < 3 {
-		klog.V(2).Infof("could not split %s into server, baseDir and subDir with separator(%s)", id, separator)
-		// try with separator "/"
-		volRegex := regexp.MustCompile("^([^/]+)/(.*)/([^/]+)$")
-		tokens := volRegex.FindStringSubmatch(id)
-		if tokens == nil || len(tokens) < 4 {
-			return nil, fmt.Errorf("could not split %s into server, baseDir and subDir with separator(%s)", id, "/")
-		}
-		server = tokens[1]
-		baseDir = tokens[2]
-		subDir = tokens[3]
-	} else {
-		server = segments[0]
-		baseDir = segments[1]
-		subDir = segments[2]
-		if len(segments) >= 4 {
-			uuid = segments[3]
-		}
-	}
-
-	return &nfsVolume{
-		id:      id,
-		server:  server,
-		baseDir: baseDir,
-		subDir:  subDir,
-		uuid:    uuid,
-	}, nil
 }
 
 // isValidVolumeCapabilities validates the given VolumeCapability array is valid

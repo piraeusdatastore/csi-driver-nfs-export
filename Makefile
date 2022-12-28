@@ -13,7 +13,7 @@
 # limitations under the License.
 
 build:
-	CGO_ENABLED=0 go build -x -ldflags="-extldflags=-static" -o ./bin/ ./cmd/nfsexportplugin
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -x -ldflags="-extldflags=-static" -o ./bin/ ./cmd/nfsexportplugin
 
 clean: 
 	rm -vfr ./bin/nfsexportplugin
@@ -23,6 +23,27 @@ run-local-provisioner:
 
 run-local-plugin:
 	go run ./cmd/nfsexportplugin/ -v 5 --endpoint unix:///usr/local/var/run/csi/socket
+
+run-local-nfs-server:
+	docker rm -f nfs-ganesha
+	docker run --name nfs-ganesha \
+		--privileged \
+		-d --restart=unless-stopped \
+		-v /Users/alexz/nfs:/export \
+		daocloud.io/piraeus/volume-nfs-exporter:ganesha
+	docker ps | grep nfs-ganesha
+
+rn: clean build
+	kubectl delete -f run/csi-nfs-node.yaml || true
+	while kubectl get pod | grep csi-nfs-node; do sleep 1; done
+	kubectl apply -f run/csi-nfs-node.yaml
+	watch kubectl get pod
+
+rp: clean build
+	kubectl delete -f run/csi-nfs-controller.yaml || true
+	while kubectl get pod | grep csi-nfs-controller; do sleep 1; done
+	kubectl apply -f run/csi-nfs-controller.yaml
+	watch kubectl get pod
 
 test:
 	kubectl apply -f example/pvc-dynamic.yaml

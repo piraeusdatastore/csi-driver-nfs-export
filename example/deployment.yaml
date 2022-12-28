@@ -7,6 +7,8 @@ spec:
   selector:
     matchLabels:
       name: deployment-nfs
+  strategy:
+    type: Recreate
   template:
     metadata:
       name: deployment-nfs
@@ -29,4 +31,4 @@ spec:
       volumes:
         - name: nfs
           persistentVolumeClaim:
-            claimName: pvc-nfs-export-dynamic
+            claimName: pvc-nfs-static

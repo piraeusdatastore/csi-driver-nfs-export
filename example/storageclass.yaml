@@ -2,18 +2,15 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: nfs-export-csi
-provisioner: nfs.csi.k8s.io
+provisioner: nfs-export.csi.k8s.io
 parameters:
-  # server: nfs-server.default.svc.cluster.local
-  # share: /
-  # server: 10.6.254.9
-  # share: /data/nfs/
   # csi.storage.k8s.io/provisioner-secret is only needed for providing mountOptions in DeleteVolume
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
   # csi.storage.k8s.io/provisioner-secret-namespace: "default"
 
-  nfsExporterImage: daocloud.io/piraeus/volume-nfs-exporter:ganesha
-  backendStorageClass: local-path
+  backendStorageClass: microk8s-hostpath
+  backendPodImage: daocloud.io/piraeus/volume-nfs-exporter:ganesha
+  backendNamespace: csi-nfs-export
 
 reclaimPolicy: Delete
 volumeBindingMode: Immediate

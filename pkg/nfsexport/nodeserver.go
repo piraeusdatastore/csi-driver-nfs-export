@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"encoding/json"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
@@ -48,20 +49,28 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing in request")
 	}
 	targetPath := req.GetTargetPath()
+	klog.V(2).Infof("Target Path is : %s", targetPath)
 	if len(targetPath) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Target path not provided")
 	}
+
+
 	mountOptions := volCap.GetMount().GetMountFlags()
 	if req.GetReadonly() {
 		mountOptions = append(mountOptions, "ro")
 	}
 
-	var server, baseDir, subDir string
+	var server, baseDir, subDir, backendPvcName string
 	subDirReplaceMap := map[string]string{}
+
+	bs, _ := json.Marshal(req.GetVolumeContext())
+    klog.V(2).Infof("VolumeContext: %s", string(bs))
 
 	mountPermissions := ns.Driver.mountPermissions
 	for k, v := range req.GetVolumeContext() {
 		switch strings.ToLower(k) {
+		case paramBackendVolumeClaim:
+			backendPvcName = v
 		case paramServer:
 			server = v
 		case paramShare:
@@ -88,12 +97,51 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		}
 	}
 
+	backendPvcName = "pvc-nfs-backend"
+
+	klog.V(2).Infof("Backend PVC Name is: %s", backendPvcName)
+
+	neDef := &nfsExport{
+		FrontendPvcNs:	 	"",
+		FrontendPvcName:	"",
+		FrontendPvName:		"",
+	
+		BackendScName: 		"",
+	
+		BackendNs: 		    "kube-system",
+		BackendPvcName: 	backendPvcName,
+		BackendPvName:		"",
+
+		BackendPodName: 	backendPvcName,
+		ExporterImage: 		"daocloud.io/piraeus/volume-nfs-exporter:ganesha",
+	
+		BackendSvcName:		backendPvcName,
+		BackendClusterIp:   "",
+
+		Size:				10737418240,
+		LogID:				"["  + "/"  + "] ",
+	}
+
+	nfsVol, err := newNfsExportVolume(neDef, ns.Driver.clientSet)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	server = nfsVol.server
+
+	baseDir = nfsVol.baseDir
+
 	if server == "" {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramServer))
 	}
 	if baseDir == "" {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramShare))
 	}
+
+	if backendPvcName == "" {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", backendPvcName))
+	}
+
 	server = getServerFromSource(server)
 	source := fmt.Sprintf("%s:%s", server, baseDir)
 	if subDir != "" {

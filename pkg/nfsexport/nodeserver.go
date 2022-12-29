@@ -30,6 +30,10 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume"
 	mount "k8s.io/mount-utils"
+
+	"time"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodeServer driver
@@ -60,7 +64,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		mountOptions = append(mountOptions, "ro")
 	}
 
-	var server, baseDir, subDir, backendPvcName string
+	var backendPvcName, backendNs, backendImg string
 	subDirReplaceMap := map[string]string{}
 
 	bs, _ := json.Marshal(req.GetVolumeContext())
@@ -71,12 +75,10 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		switch strings.ToLower(k) {
 		case paramBackendVolumeClaim:
 			backendPvcName = v
-		case paramServer:
-			server = v
-		case paramShare:
-			baseDir = v
-		case paramSubDir:
-			subDir = v
+		case paramBackendNamespace:
+			backendNs = v
+		case paramBackendPodImage:
+			backendImg = v
 		case pvcNamespaceKey:
 			subDirReplaceMap[pvcNamespaceMetadata] = v
 		case pvcNameKey:
@@ -97,53 +99,167 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		}
 	}
 
-	backendPvcName = "pvc-nfs-backend"
-
-	klog.V(2).Infof("Backend PVC Name is: %s", backendPvcName)
-
-	neDef := &nfsExport{
-		FrontendPvcNs:	 	"",
-		FrontendPvcName:	"",
-		FrontendPvName:		"",
-	
-		BackendScName: 		"",
-	
-		BackendNs: 		    "kube-system",
-		BackendPvcName: 	backendPvcName,
-		BackendPvName:		"",
-
-		BackendPodName: 	backendPvcName,
-		ExporterImage: 		"daocloud.io/piraeus/volume-nfs-exporter:ganesha",
-	
-		BackendSvcName:		backendPvcName,
-		BackendClusterIp:   "",
-
-		Size:				10737418240,
-		LogID:				"["  + "/"  + "] ",
-	}
-
-	nfsVol, err := newNfsExportVolume(neDef, ns.Driver.clientSet)
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-
-	server = nfsVol.server
-
-	baseDir = nfsVol.baseDir
-
-	if server == "" {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramServer))
-	}
-	if baseDir == "" {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramShare))
-	}
 
 	if backendPvcName == "" {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", backendPvcName))
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramBackendVolumeClaim))
 	}
+	if backendNs == "" {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramBackendNamespace))
+	}
+
+
+	// Create backend service
+	backendSvcName := backendPvcName
+	klog.V(2).Infof("Backend Service \"%s\"", backendSvcName )
+	backendSvcDef := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: backendSvcName,
+			// OwnerReferences: []metav1.OwnerReference{
+			// 	{
+			// 		APIVersion:         "v1",
+			// 		Kind:               "PersistentVolumeClaim",
+			// 		Name:               backendPvcName,
+			// 		UID:                backendPvcUid,
+			// 	},
+			// },
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+					"nfs-export.csi.k8s.io/backend-pvc": backendPvcName,
+				},
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Name:		"nfs",
+					Protocol:	corev1.ProtocolTCP,
+					Port:		2049,
+				},
+				{
+					Name:		"rpc-tcp",
+					Protocol:	corev1.ProtocolTCP,
+					Port:		111,
+				},
+				{
+					Name:		"rpc-udp",
+					Protocol:	corev1.ProtocolUDP,
+					Port:		111,
+				},
+			},
+		},
+	}
+
+	_, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
+	if err != nil {
+		_, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Create(context.TODO(), backendSvcDef, metav1.CreateOptions{})
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+
+	backendClusterIp := ""
+	for {
+		time.Sleep(1 * time.Second)
+		backendSvc, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
+		if err == nil {
+			backendClusterIp = backendSvc.Spec.ClusterIP;
+			klog.V(2).Infof("Backend IP is \"%s\"", backendClusterIp)
+		} else {
+			klog.V(2).Infof("Waiting for Backend Service to get ready: \"%s\"", backendSvcName)
+		}
+		if backendClusterIp != "" {
+			break
+		} 
+	}
+
+
+	// Create backend Pod to connect backend SVC with backend PVC
+	backendPodName := backendPvcName
+	klog.Infof("Creating frontend pod: \"%s\"", backendPodName)
+
+	backendPodDef := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: backendPodName,
+			Labels: map[string]string{
+				"nfs-export.csi.k8s.io/backend-pvc": backendPvcName,
+			},
+			// OwnerReferences: []metav1.OwnerReference{
+			// 	{
+			// 		APIVersion:         "v1",
+			// 		Kind:               "PersistentVolumeClaim",
+			// 		Name:               backendPvcName,
+			// 		UID:                backendPvcUid,
+			// 	},
+			// },
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "export",
+					Image: backendImg,
+					ImagePullPolicy: corev1.PullAlways,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Add: []corev1.Capability{
+								"SYS_ADMIN",
+								"SETPCAP",
+								"DAC_READ_SEARCH",
+							},
+						},
+					},
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "nfs",
+							Protocol:      corev1.ProtocolTCP,
+							ContainerPort: 2049,
+						},
+						{
+							Name:          "rpc-tcp",
+							Protocol:      corev1.ProtocolTCP,
+							ContainerPort: 111,
+						},
+						{
+							Name:          "rpc-udp",
+							Protocol:      corev1.ProtocolUDP,
+							ContainerPort: 111,
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:		"data",
+							MountPath:	"/export",
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "data",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: backendPvcName,
+						},
+					},
+				},
+			},
+		},
+	}
+
+
+	_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Get(context.TODO(), backendPodName, metav1.GetOptions{})
+	if err != nil {
+		_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Create(context.TODO(), backendPodDef, metav1.CreateOptions{})
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+
+	server  := backendClusterIp
+	baseDir := "/"
+	subDir  := ""
 
 	server = getServerFromSource(server)
 	source := fmt.Sprintf("%s:%s", server, baseDir)
+
 	if subDir != "" {
 		// replace pv/pvc name namespace metadata in subDir
 		subDir = replaceWithMap(subDir, subDirReplaceMap)

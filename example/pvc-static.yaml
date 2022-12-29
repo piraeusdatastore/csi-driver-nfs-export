@@ -2,7 +2,7 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: pvc-nfs-static
+  name: pvc-nfs-export-static
 spec:
   accessModes:
     - ReadWriteMany
@@ -10,4 +10,4 @@ spec:
     requests:
       storage: 10Gi
   volumeName: pv-nfs
-  storageClassName: nfs-csi
+  storageClassName: csi-nfs-export

@@ -61,7 +61,7 @@ const (
 	DefaultDriverName         = "nfs-export.csi.k8s.io"
 	paramBackendVolumeClaim	  = "backendvolumeclaim"
 	paramBackendStorageClass  = "backendstorageclass"
-	paramBackendPodImage = "backendpodimage"
+	paramBackendPodImage 	  = "backendpodimage"
 	paramBackendNamespace     = "backendnamespace"
 
 	mountOptionsField         = "mountoptions"

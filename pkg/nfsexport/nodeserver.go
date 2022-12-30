@@ -34,6 +34,8 @@ import (
 	"time"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"github.com/hexops/valast"
 )
 
 // NodeServer driver
@@ -107,21 +109,27 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramBackendNamespace))
 	}
 
+	// Check if backend PVC exists
+	backendPvc, err := ns.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Get(context.TODO(), backendPvcName, metav1.GetOptions{})
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	backendPvcUid := backendPvc.ObjectMeta.UID
 
-	// Create backend service
+	// Create backend Service
 	backendSvcName := backendPvcName
 	klog.V(2).Infof("Backend Service \"%s\"", backendSvcName )
 	backendSvcDef := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: backendSvcName,
-			// OwnerReferences: []metav1.OwnerReference{
-			// 	{
-			// 		APIVersion:         "v1",
-			// 		Kind:               "PersistentVolumeClaim",
-			// 		Name:               backendPvcName,
-			// 		UID:                backendPvcUid,
-			// 	},
-			// },
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "v1",
+					Kind:               "PersistentVolumeClaim",
+					Name:               backendPvcName,
+					UID:                backendPvcUid,
+				},
+			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
@@ -148,7 +156,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		},
 	}
 
-	_, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
+	_, err = ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
 	if err != nil {
 		_, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Create(context.TODO(), backendSvcDef, metav1.CreateOptions{})
 		if err != nil {
@@ -159,6 +167,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	backendClusterIp := ""
 	for {
 		time.Sleep(1 * time.Second)
+		klog.V(2).Infof("Wait for backend service to be ready: %s", backendSvcName)
 		backendSvc, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
 		if err == nil {
 			backendClusterIp = backendSvc.Spec.ClusterIP;
@@ -171,10 +180,9 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		} 
 	}
 
-
 	// Create backend Pod to connect backend SVC with backend PVC
 	backendPodName := backendPvcName
-	klog.Infof("Creating frontend pod: \"%s\"", backendPodName)
+	klog.Infof("Creating backend POD: \"%s\"", backendPodName)
 
 	backendPodDef := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -182,14 +190,14 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			Labels: map[string]string{
 				"nfs-export.csi.k8s.io/backend-pvc": backendPvcName,
 			},
-			// OwnerReferences: []metav1.OwnerReference{
-			// 	{
-			// 		APIVersion:         "v1",
-			// 		Kind:               "PersistentVolumeClaim",
-			// 		Name:               backendPvcName,
-			// 		UID:                backendPvcUid,
-			// 	},
-			// },
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "v1",
+					Kind:               "PersistentVolumeClaim",
+					Name:               backendPvcName,
+					UID:                backendPvcUid,
+				},
+			},
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
@@ -198,13 +206,19 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 					Image: backendImg,
 					ImagePullPolicy: corev1.PullAlways,
 					SecurityContext: &corev1.SecurityContext{
-						Capabilities: &corev1.Capabilities{
-							Add: []corev1.Capability{
-								"SYS_ADMIN",
-								"SETPCAP",
-								"DAC_READ_SEARCH",
-							},
-						},
+						Privileged: valast.Addr(true).(*bool),
+					},
+					// SecurityContext: &corev1.SecurityContext{
+					// 	Capabilities: &corev1.Capabilities{
+					// 		Add: []corev1.Capability{
+					// 			"SYS_ADMIN",
+					// 			"SETPCAP",
+					// 			"DAC_READ_SEARCH",
+					// 		},
+					// 	},
+					// },
+					Args: []string{
+						"/export",
 					},
 					Ports: []corev1.ContainerPort{
 						{
@@ -223,17 +237,38 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 							ContainerPort: 111,
 						},
 					},
+					ReadinessProbe: &corev1.Probe {
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromString("nfs"),
+							},
+						},
+						InitialDelaySeconds: 1,
+						PeriodSeconds: 1,
+						SuccessThreshold: 3,
+					},
 					VolumeMounts: []corev1.VolumeMount{
 						{
-							Name:		"data",
-							MountPath:	"/export",
+							Name:			  "share",
+							MountPath:		  "/share",
+							MountPropagation: valast.Addr(corev1.MountPropagationMode("Bidirectional")).(*corev1.MountPropagationMode),
+						},
+						{
+							Name:	   "export",
+							MountPath: "/export",
 						},
 					},
 				},
 			},
 			Volumes: []corev1.Volume{
 				{
-					Name: "data",
+					Name: "share", 
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: "export",
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 							ClaimName: backendPvcName,
@@ -244,7 +279,6 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		},
 	}
 
-
 	_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Get(context.TODO(), backendPodName, metav1.GetOptions{})
 	if err != nil {
 		_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Create(context.TODO(), backendPodDef, metav1.CreateOptions{})
@@ -253,20 +287,22 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		}
 	}
 
+	// Wait for Pod to be ready
+	for {
+		time.Sleep(1 * time.Second)
+		klog.V(2).Infof("Wait for backend POD to be ready: %s", backendPodName)
+		backendPod, err := ns.Driver.clientSet.CoreV1().Pods(backendNs).Get(context.TODO(), backendPodName, metav1.GetOptions{})
+		if err == nil && backendPod.Status.Phase == corev1.PodRunning {
+			break
+		} 
+	}
+
+	// Mount nfs export
 	server  := backendClusterIp
 	baseDir := "/"
-	subDir  := ""
 
 	server = getServerFromSource(server)
 	source := fmt.Sprintf("%s:%s", server, baseDir)
-
-	if subDir != "" {
-		// replace pv/pvc name namespace metadata in subDir
-		subDir = replaceWithMap(subDir, subDirReplaceMap)
-
-		source = strings.TrimRight(source, "/")
-		source = fmt.Sprintf("%s/%s", source, subDir)
-	}
 
 	notMnt, err := ns.mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
@@ -284,7 +320,9 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	klog.V(2).Infof("NodePublishVolume: volumeID(%v) source(%s) targetPath(%s) mountflags(%v)", volumeID, source, targetPath, mountOptions)
+
 	err = ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
+	
 	if err != nil {
 		if os.IsPermission(err) {
 			return nil, status.Error(codes.PermissionDenied, err.Error())
@@ -303,6 +341,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		klog.V(2).Infof("skip chmod on targetPath(%s) since mountPermissions is set as 0", targetPath)
 	}
 	klog.V(2).Infof("volume(%s) mount %s on %s succeeded", volumeID, source, targetPath)
+	
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 

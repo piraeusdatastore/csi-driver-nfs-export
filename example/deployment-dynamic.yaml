@@ -20,6 +20,8 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
         - name: deployment-nfs-export-dynamic
+          # securityContext:
+          #   privileged: true
           image: daocloud.io/nginx
           command:
             - "/bin/bash"
@@ -28,6 +30,7 @@ spec:
           volumeMounts:
             - name: nfs
               mountPath: "/mnt/nfs"
+              # mountPropagation: Bidirectional
       volumes:
         - name: nfs
           persistentVolumeClaim:

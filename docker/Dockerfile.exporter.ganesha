@@ -1,0 +1,23 @@
+FROM debian:bullseye-slim
+RUN DEBIAN_FRONTEND=noninteractive \
+ && sed -i 's/deb.debian.org/mirrors.aliyun.com/; s/security.debian.org/mirrors.aliyun.com/' /etc/apt/sources.list \
+ && apt-get update \
+ && apt-get install -y gnupg2 wget \
+ && wget -O - https://download.nfs-ganesha.org/3/rsa.pub | apt-key add - \
+ && echo deb [arch=amd64] https://download.nfs-ganesha.org/3/LATEST/Debian/bullseye/amd64/apt bullseye main > /etc/apt/sources.list.d/nfs-ganesha.list \
+ && apt-get update \
+ && apt-get install -y netbase nfs-common dbus nfs-ganesha nfs-ganesha-vfs \
+ && apt-get remove -y gnupg2 wget \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+ && mkdir -p /run/rpcbind /export /var/run/dbus /var/run/ganesha \
+ && touch /run/rpcbind/rpcbind.xdr /run/rpcbind/portmap.xdr \
+ && chmod 755 /run/rpcbind/* \
+ && chown messagebus:messagebus /var/run/dbus \
+ && ln -vs /proc/mounts /etc/mtab 
+
+COPY start.sh /
+
+EXPOSE 2049 38465-38467 662 111/udp 111
+
+ENTRYPOINT [ "/start.sh" ]

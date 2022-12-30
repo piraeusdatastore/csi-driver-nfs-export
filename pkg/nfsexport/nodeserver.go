@@ -321,7 +321,12 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	klog.V(2).Infof("NodePublishVolume: volumeID(%v) source(%s) targetPath(%s) mountflags(%v)", volumeID, source, targetPath, mountOptions)
 
-	err = ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
+	localSource := "/var/snap/microk8s/common/default-storage/local" // experimental
+	if localSource != "" {
+		err = ns.mounter.Mount(localSource, targetPath, "", []string{"bind"})
+	} else {
+		err = ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
+	}
 	
 	if err != nil {
 		if os.IsPermission(err) {

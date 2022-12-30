@@ -2,14 +2,14 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: csi-nfs-controller-sa
-  namespace: kube-system
+  name: csi-nfs-export-controller-sa
+  namespace: csi-nfs-export
 ---
 
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: nfs-external-provisioner-role
+  name: csi-nfs-export-controller-role
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
@@ -40,45 +40,69 @@ rules:
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: nfs-csi-provisioner-binding
+  name: csi-nfs-export-controller-binding
 subjects:
   - kind: ServiceAccount
-    name: csi-nfs-controller-sa
-    namespace: kube-system
+    name: csi-nfs-export-controller-sa
+    namespace: csi-nfs-export
 roleRef:
   kind: ClusterRole
-  name: nfs-external-provisioner-role
+  name: csi-nfs-export-controller-role
   apiGroup: rbac.authorization.k8s.io
 ---
 
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: csi-nfs-node-sa
-  namespace: kube-system
+  name: csi-nfs-export-node-sa
+  namespace: csi-nfs-export
 ---
 
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: nfs-csi-node-role
+  name: csi-nfs-export-node-role
 rules:
   - apiGroups: [""]
-    resources: ["pods","services","namespaces","deployments","jobs"] 
-    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete", "update"]
+  - apiGroups: [""]
+    resources: ["pods","services"]
+    verbs: ["get", "list", "watch", "create", "delete", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
 ---
 
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
-  name: nfs-csi-node-binding
+  name: csi-nfs-export-node-binding
 subjects:
   - kind: ServiceAccount
-    name: csi-nfs-node-sa
-    namespace: kube-system
+    name: csi-nfs-export-node-sa
+    namespace: csi-nfs-export
 roleRef:
   kind: ClusterRole
-  name: nfs-csi-node-role
+  name: csi-nfs-export-node-role
   apiGroup: rbac.authorization.k8s.io
 
 

@@ -8,7 +8,7 @@ parameters:
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
   # csi.storage.k8s.io/provisioner-secret-namespace: "default"
 
-  backendStorageClass: microk8s-hostpath
+  backendStorageClass: ""
   backendPodImage: daocloud.io/piraeus/volume-nfs-exporter:ganesha
   backendNamespace: csi-nfs-export
 

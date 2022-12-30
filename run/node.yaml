@@ -2,8 +2,8 @@
 kind: DaemonSet
 apiVersion: apps/v1
 metadata:
-  name: csi-nfs-node
-  namespace: kube-system
+  name: csi-nfs-export-node
+  namespace: csi-nfs-export
 spec:
   updateStrategy:
     rollingUpdate:
@@ -11,15 +11,15 @@ spec:
     type: RollingUpdate
   selector:
     matchLabels:
-      app: csi-nfs-node
+      app: csi-nfs-export-node
   template:
     metadata:
       labels:
-        app: csi-nfs-node
+        app: csi-nfs-export-node
     spec:
       hostNetwork: true  # original nfs connection would be broken without hostNetwork setting
       dnsPolicy: Default  # available values: Default, ClusterFirstWithHostNet, ClusterFirst
-      serviceAccountName: csi-nfs-node-sa
+      serviceAccountName: csi-nfs-export-node-sa
       nodeSelector:
         kubernetes.io/os: linux
       tolerations:
@@ -63,7 +63,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
           resources: {}
-        - name: nfs
+        - name: nfs-export
           securityContext:
             privileged: true
             capabilities:

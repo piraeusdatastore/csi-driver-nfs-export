@@ -2,24 +2,24 @@
 kind: Deployment
 apiVersion: apps/v1
 metadata:
-  name: csi-nfs-controller
-  namespace: kube-system
+  name: csi-nfs-export-controller
+  namespace: csi-nfs-export
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: csi-nfs-controller
+      app: csi-nfs-export-controller
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: csi-nfs-controller
+        app: csi-nfs-export-controller
     spec:
       terminationGracePeriodSeconds: 0
       hostNetwork: true  # controller also needs to mount nfs to create dir
       dnsPolicy: Default  # available values: Default, ClusterFirstWithHostNet, ClusterFirst
-      serviceAccountName: csi-nfs-controller-sa
+      serviceAccountName: csi-nfs-export-controller-sa
       nodeSelector:
         kubernetes.io/os: linux  # add "kubernetes.io/role: master" to run controller on master node
       tolerations:
@@ -39,7 +39,7 @@ spec:
             - "-v=2"
             - "--csi-address=$(ADDRESS)"
             - "--leader-election"
-            - "--leader-election-namespace=kube-system"
+            - "--leader-election-namespace=csi-nfs-export"
             - "--extra-create-metadata=true"
           env:
             - name: ADDRESS
@@ -59,7 +59,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
           resources: {}
-        - name: nfs
+        - name: nfs-export
           # image: daocloud.io/daocloud/nfsplugin:v4.1.0
           # image: daocloud.io/daocloud/golang:1.18
           image: daocloud.io/alpine
@@ -74,11 +74,7 @@ spec:
             - "-v=5"
             - "--nodeid=$(NODE_ID)"
             - "--endpoint=$(CSI_ENDPOINT)"
-          env:
-            # - name: HTTP_PROXY
-            #   value: http://10.6.254.9:13128
-            # - name: HTTPS_PROXY
-            #   value: http://10.6.254.9:13128              
+          env:   
             - name: NODE_ID
               valueFrom:
                 fieldRef:

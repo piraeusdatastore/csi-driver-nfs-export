@@ -1,25 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-nfs
+  name: deployment-nfs-export-dynamic
 spec:
   replicas: 1
   selector:
     matchLabels:
-      name: deployment-nfs
+      name: deployment-nfs-export-dynamic
   strategy:
     type: Recreate
   template:
     metadata:
-      name: deployment-nfs
+      name: deployment-nfs-export-dynamic
       labels:
-        name: deployment-nfs
+        name: deployment-nfs-export-dynamic
     spec:
       nodeSelector:
         "kubernetes.io/os": linux
       terminationGracePeriodSeconds: 0
       containers:
-        - name: deployment-nfs
+        - name: deployment-nfs-export-dynamic
+          # securityContext:
+          #   privileged: true
           image: daocloud.io/nginx
           command:
             - "/bin/bash"
@@ -28,7 +30,8 @@ spec:
           volumeMounts:
             - name: nfs
               mountPath: "/mnt/nfs"
+              # mountPropagation: Bidirectional
       volumes:
         - name: nfs
           persistentVolumeClaim:
-            claimName: pvc-nfs-static
+            claimName: pvc-nfs-export-dynamic

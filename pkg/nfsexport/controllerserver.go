@@ -32,48 +32,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	// "k8s.io/client-go/kubernetes"
 )
 
 // ControllerServer controller server setting
 type ControllerServer struct {
 	Driver *Driver
 }
-
-// // nfsVolume is an internal representation of a volume
-// // created by the provisioner.
-// type nfsVolume struct {
-// 	// Volume id
-// 	id string
-// 	// Address of the NFS server.
-// 	// Matches paramServer.
-// 	server string
-// 	// Base directory of the NFS server to create volumes under
-// 	// Matches paramShare.
-// 	baseDir string
-// 	// Subdirectory of the NFS server to create volumes under
-// 	subDir string
-// 	// size of volume
-// 	size int64
-// 	// pv name when subDir is not empty
-// 	uuid string
-// }
-
-
-
-// Ordering of elements in the CSI volume id.
-// ID is of the form {server}/{baseDir}/{subDir}.
-// TODO: This volume id format limits baseDir and
-// subDir to only be one directory deep.
-// Adding a new element should always go at the end
-// before totalIDElements
-const (
-	idServer = iota
-	idBaseDir
-	idSubDir
-	idUUID
-	totalIDElements // Always last
-)
 
 type backendPvc struct {
 	name string
@@ -87,8 +51,8 @@ const separator = "#"
 
 // CreateVolume create a volume
 func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	name := req.GetName()
-	if len(name) == 0 {
+	frontendPvName := req.GetName()
+	if len(frontendPvName) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "CreateVolume name must be provided")
 	}
 
@@ -131,9 +95,10 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 	}
 
-	backendPvcName := name + "-backend"
+	// Create BackendPvc
+	backendPvcName := "backend-" + frontendPvName
 
-	klog.V(2).Infof("Backend StorageClass  is: %s", backendSc)
+	klog.V(2).Infof("Backend StorageClass is: %s", backendSc)
 	klog.V(2).Infof("Backend Pod Image is: %s", backendImg)
 	klog.V(2).Infof("Backend Namespace is: %s", backendNs)
 	klog.V(2).Infof("Backend PVC Name is: %s", backendPvcName )
@@ -157,21 +122,26 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		},
 	}
 
-    _, err := cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
-
-	if err != nil {
-		panic(err)
+	backendPvc, err := cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Get(context.TODO(), backendPvcName, metav1.GetOptions{})
+	if err != nil { // check if backend PVC already exists. Needs a more strict verification here
+		backendPvc, err = cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 	}
+	
+    backendPvcUid := string(backendPvc.ObjectMeta.UID)
+	klog.V(2).Infof("Backend PVC uid is: %s", backendPvcUid )
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      "E536A5A3-7BB0-4D5E-9D0D-3B2ACBF1AC98",
+			VolumeId:      backendPvcUid, // CSI Volume Handle, needs improvement here
 			CapacityBytes: 0, // by setting it to zero, Provisioner will use PVC requested size as PV size
 			VolumeContext: map[string]string{
-				"backendVolumeClaim"  : backendPvcName,
-				"backendNamespace" 	  : backendNs,
-				"backendStorageClass" : backendSc,
-				"backendPodImage"     : backendImg,
+				"backendVolumeClaim"  	: backendPvcName,
+				"backendNamespace" 	  	: backendNs,
+				"backendStorageClass" 	: backendSc,
+				"backendPodImage"     	: backendImg,
 			},
 		},
 	}, nil
@@ -244,16 +214,6 @@ func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 
 func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
-}
-
-// Given a nfsVolume, return a CSI volume id
-func getVolumeIDFromNfsVol(vol *nfsVolume) string {
-	idElements := make([]string, totalIDElements)
-	idElements[idServer] = strings.Trim(vol.server, "/")
-	idElements[idBaseDir] = strings.Trim(vol.baseDir, "/")
-	idElements[idSubDir] = strings.Trim(vol.subDir, "/")
-	idElements[idUUID] = vol.uuid
-	return strings.Join(idElements, separator)
 }
 
 // isValidVolumeCapabilities validates the given VolumeCapability array is valid

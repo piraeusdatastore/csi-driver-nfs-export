@@ -1,0 +1,15 @@
+# not working because csi requires the same provisioner
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-nfs-export-by-datasource
+spec:
+  dataSource:
+    kind: PersistentVolumeClaim
+    name: csi-pvc
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: nfs-export-csi

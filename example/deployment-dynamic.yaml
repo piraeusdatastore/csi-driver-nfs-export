@@ -1,37 +1,48 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: deployment-nfs-export-dynamic
+  name: deployment-nginx-dynamic
+  labels:
+      nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
 spec:
-  replicas: 1
+  replicas: 5
   selector:
     matchLabels:
-      name: deployment-nfs-export-dynamic
+      nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
   strategy:
     type: Recreate
   template:
     metadata:
-      name: deployment-nfs-export-dynamic
+      name: deployment-nginx-dynamic
       labels:
-        name: deployment-nfs-export-dynamic
+        nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
     spec:
       nodeSelector:
         "kubernetes.io/os": linux
       terminationGracePeriodSeconds: 0
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: name
+                operator: In
+                values:
+                - deployment-nginx-dynamic
+            topologyKey: topology.kubernetes.io/hostname
       containers:
-        - name: deployment-nfs-export-dynamic
-          # securityContext:
-          #   privileged: true
+        - name: deployment-nginx-dynamic
           image: daocloud.io/nginx
+          imagePullPolicy: IfNotPresent
+          resources: {}
           command:
             - "/bin/bash"
             - "-c"
-            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/nfs/outfile; sleep 1; done
+            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /data/outfile; sleep 1; done
           volumeMounts:
-            - name: nfs
-              mountPath: "/mnt/nfs"
-              # mountPropagation: Bidirectional
+            - name: data
+              mountPath: "/data"
       volumes:
-        - name: nfs
+        - name: data
           persistentVolumeClaim:
             claimName: pvc-nfs-export-dynamic

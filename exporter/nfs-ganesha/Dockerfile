@@ -1,7 +1,7 @@
+# Ref: https://github.com/rook/nfs/blob/master/images/nfs/Dockerfile
 FROM debian:bullseye-slim
 RUN DEBIAN_FRONTEND=noninteractive \
- && sed -i 's/deb.debian.org/mirrors.aliyun.com/; s/security.debian.org/mirrors.aliyun.com/' /etc/apt/sources.list \
- && apt-get update \
+ apt-get update \
  && apt-get install -y gnupg2 wget \
  && wget -O - https://download.nfs-ganesha.org/3/rsa.pub | apt-key add - \
  && echo deb [arch=amd64] https://download.nfs-ganesha.org/3/LATEST/Debian/bullseye/amd64/apt bullseye main > /etc/apt/sources.list.d/nfs-ganesha.list \

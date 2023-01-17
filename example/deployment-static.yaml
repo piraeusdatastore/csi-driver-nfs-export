@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-nginx-static
+  labels:
+      nfs-export.csi.k8s.io/id: deployment-nginx-static
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      nfs-export.csi.k8s.io/id: deployment-nginx-static
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      name: deployment-nginx-static
+      labels:
+        nfs-export.csi.k8s.io/id: deployment-nginx-static
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: deployment-nginx-static
+          image: daocloud.io/nginx
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/bash"
+            - "-c"
+            - set -euo pipefail; while true; do echo $(hostname) $(date) >> /mnt/data/outfile; sleep 1; done
+          volumeMounts:
+            - name: nfs
+              mountPath: "/mnt/data"
+      volumes:
+        - name: nfs
+          persistentVolumeClaim:
+            claimName: pvc-nfs-export-static

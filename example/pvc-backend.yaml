@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: pvc-nfs-backend
+  name: my-data-pvc
 spec:
   accessModes:
     - ReadWriteMany

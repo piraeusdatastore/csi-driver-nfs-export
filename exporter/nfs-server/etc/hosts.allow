@@ -1,0 +1,5 @@
+portmap:    {{HOSTS_ALLOW}}
+lockd:      {{HOSTS_ALLOW}}
+mountd:     {{HOSTS_ALLOW}}
+rquotad:    {{HOSTS_ALLOW}}     
+statd:      {{HOSTS_ALLOW}}

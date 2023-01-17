@@ -30,6 +30,7 @@ import (
 
 	"k8s.io/klog/v2"
 	netutil "k8s.io/utils/net"
+	mount "k8s.io/mount-utils"
 
 )
 
@@ -176,3 +177,19 @@ func setKeyValueInMap(m map[string]string, key, value string) {
 	}
 	m[key] = value
 }
+
+func IsCorruptedDir(dir string) bool {
+	_, pathErr := mount.PathExists(dir)
+	return pathErr != nil && mount.IsCorruptedMnt(pathErr)
+}
+
+// replaceWithMap replace key with value for str
+func replaceWithMap(str string, m map[string]string) string {
+	for k, v := range m {
+		if k != "" {
+			str = strings.ReplaceAll(str, k, v)
+		}
+	}
+	return str
+}
+

@@ -3,7 +3,9 @@ kind: DaemonSet
 apiVersion: apps/v1
 metadata:
   name: csi-nfs-export-node
-  namespace: csi-nfs-export
+  namespace: default
+  labels:
+    nfs-export.csi.k8s.io/server: node
 spec:
   updateStrategy:
     rollingUpdate:
@@ -11,11 +13,11 @@ spec:
     type: RollingUpdate
   selector:
     matchLabels:
-      app: csi-nfs-export-node
+      nfs-export.csi.k8s.io/server: node
   template:
     metadata:
       labels:
-        app: csi-nfs-export-node
+        nfs-export.csi.k8s.io/server: node
     spec:
       hostNetwork: true  # original nfs connection would be broken without hostNetwork setting
       dnsPolicy: Default  # available values: Default, ClusterFirstWithHostNet, ClusterFirst
@@ -26,7 +28,7 @@ spec:
         - operator: "Exists"
       containers:
         - name: liveness-probe
-          image: daocloud.io/daocloud/livenessprobe:v2.7.0
+          image: daocloud.io/piraeus/livenessprobe:v2.7.0
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -37,7 +39,7 @@ spec:
               mountPath: /csi
           resources: {}
         - name: node-driver-registrar
-          image: daocloud.io/daocloud/csi-node-driver-registrar:v2.5.1
+          image: daocloud.io/piraeus/csi-node-driver-registrar:v2.5.1
           args:
             - --v=2
             - --csi-address=/csi/csi.sock
@@ -62,6 +64,12 @@ spec:
               mountPath: /csi
             - name: registration-dir
               mountPath: /registration
+            - mountPath: /var/snap/microk8s/common/var/lib/kubelet/pods
+              name: pods-mount-dir
+            # - mountPath: /pods 
+            #   name: pods-mount-dir
+            - name: local-volumes
+              mountPath: /volumes
           resources: {}
         - name: nfs-export
           securityContext:
@@ -69,11 +77,9 @@ spec:
             capabilities:
               add: ["SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          # image: daocloud.io/daocloud/nfsplugin:v4.1.0
-          image: daocloud.io/alpine
-          # args:
-          command:
-            - /go/cne/bin/nfsexportplugin
+          image: daocloud.io/piraeus/csi-nfs-export-plugin:latest
+          imagePullPolicy: Always
+          args:
             - "-v=5"
             - "--nodeid=$(NODE_ID)"
             - "--endpoint=$(CSI_ENDPOINT)"
@@ -96,15 +102,15 @@ spec:
             initialDelaySeconds: 30
             timeoutSeconds: 10
             periodSeconds: 30
-          imagePullPolicy: "IfNotPresent"
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
             - name: pods-mount-dir
               mountPath: /var/snap/microk8s/common/var/lib/kubelet/pods
               mountPropagation: "Bidirectional"
-            - name: github
-              mountPath: /go/cne
+            - name: local-volumes
+              mountPath: /volumes
+              mountPropagation: "Bidirectional"
           resources: {}
       volumes:
         - name: socket-dir
@@ -119,7 +125,7 @@ spec:
             path: /var/snap/microk8s/common/var/lib/kubelet/plugins_registry
             type: Directory
           name: registration-dir
-        - name: github
+        - name: local-volumes
           hostPath:
-            path: /media/psf/Github/rafflescity/csi-driver-nfs-export/
-            type: Directory
+            path: /var/lib/csi-nfs-export/volumes/
+            type: DirectoryOrCreate

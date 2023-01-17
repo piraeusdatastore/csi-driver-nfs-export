@@ -1,7 +1,6 @@
 # CSI NFS Export Driver (EXPERIMENTAL)
 
 > **Note:**
-> 
 > This repo is in PoC stage
 
 ## Overview
@@ -17,3 +16,11 @@
 ## Data Flow
 
 ![Data Plane](img/data_flow.drawio.svg)
+
+## Heighlights 
+
+1. Support `Static Provisioning`
+1. Mount local path on the backend node
+1. Implement `controller.kubernetes.io/pod-deletion-cost`
+1. Remove backend when PVC is completely *umounted*
+1. Add export IP Range for NFS security

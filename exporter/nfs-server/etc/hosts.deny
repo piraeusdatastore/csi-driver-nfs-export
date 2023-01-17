@@ -1,0 +1,5 @@
+portmap:    ALL
+lockd:      ALL
+mountd:     ALL
+rquotad:    ALL
+statd:      ALL

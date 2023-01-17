@@ -22,6 +22,7 @@ import (
 	//"path/filepath"
 	//"regexp"
 	"strings"
+	//"strconv"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
@@ -32,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"github.com/google/uuid"
 )
 
 // ControllerServer controller server setting
@@ -39,50 +41,39 @@ type ControllerServer struct {
 	Driver *Driver
 }
 
-type backendPvc struct {
-	name string
-	namespace string
-	size int64
-	StorageClass string
-	image string
-}
-
-const separator = "#"
-
 // CreateVolume create a volume
 func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	frontendPvName := req.GetName()
-	if len(frontendPvName) == 0 {
+	nfsPVName := req.GetName()
+	if len(nfsPVName) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "CreateVolume name must be provided")
 	}
 
 	if err := isValidVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-
-	// mountPermissions := cs.Driver.mountPermissions
-	size := req.GetCapacityRange().GetRequiredBytes()
 	
 	parameters := req.GetParameters()
 	if parameters == nil {
 		parameters = make(map[string]string)
 	}
 
-    var backendSc, backendImg, backendNs string
-
+    var dataSC, nfsServerImage, nfsHostsAllow, nfsPVCName, nfsPVCNamespace string
 	// validate parameters (case-insensitive)
+	// mountPermissions := cs.Driver.mountPermissions
 	for k, v := range parameters {
 		switch strings.ToLower(k) {
-		case paramBackendStorageClass:
-			backendSc = v
-		case paramBackendPodImage:
-			backendImg = v
-		case paramBackendNamespace:
-			backendNs = v
-		case pvcNamespaceKey:
+		case paramDataStorageClass:
+			dataSC = v
+		case paramNfsServerImage:
+			nfsServerImage = v
+		case paramNfsHostsAllow:
+			nfsHostsAllow = v
 		case pvcNameKey:
+			nfsPVCName = v
+		case pvcNamespaceKey:
+			nfsPVCNamespace = v
 		case pvNameKey:
-			// no op
+			klog.V(2).Infof("pvNamekey: %s", v)
 		case mountPermissionsField:
 			// if v != "" {
 			// 	var err error
@@ -95,22 +86,49 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 	}
 
-	// Create BackendPvc
-	backendPvcName := "backend-" + frontendPvName
+	// Create BackendPVC
+	volumeID := "nfs-" + uuid.New().String()
+	dataPVCName := volumeID
+	dataNamespace := nfsPVCNamespace
 
-	klog.V(2).Infof("Backend StorageClass is: %s", backendSc)
-	klog.V(2).Infof("Backend Pod Image is: %s", backendImg)
-	klog.V(2).Infof("Backend Namespace is: %s", backendNs)
-	klog.V(2).Infof("Backend PVC Name is: %s", backendPvcName )
+	if dataSC == "" { // use default StorageClass if none provided 
+		scList, err := cs.Driver.clientSet.StorageV1().StorageClasses().List(context.TODO(), metav1.ListOptions{})
+		if err == nil {
+			for _, sc := range scList.Items {
+				if a := sc.ObjectMeta.Annotations; a != nil {
+					if v, ok := a["storageclass.kubernetes.io/is-default-class"]; ok && v == "true" {
+						dataSC = sc.ObjectMeta.Name
+						break
+					}
+				}
+			}
+		}
+	}
 
+	if nfsServerImage == "" {
+		nfsServerImage = "daocloud.io/piraeus/nfs-ganesha:latest" // default image
+	}
+
+	klog.V(2).Infof("NFS PVC Name is: %s", nfsPVCName)
+	klog.V(2).Infof("NFS PVC Namespace is: %s", nfsPVCNamespace)
+	klog.V(2).Infof("NFS Pod Image is: %s", nfsServerImage)
+	klog.V(2).Infof("NFS Allowed Host IPs are: %s", nfsHostsAllow )
+	klog.V(2).Infof("DATA StorageClass is: %s", dataSC)
+	klog.V(2).Infof("DATA Namespace is: %s", dataNamespace)
+	klog.V(2).Infof("DATA PVC Name is: %s", dataPVCName )
+
+	size := req.GetCapacityRange().GetRequiredBytes()
 	resourceStorage := resource.NewQuantity(size, resource.BinarySI)
 
-	backendPvcDef := &corev1.PersistentVolumeClaim{
+	dataPVCDef := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: backendPvcName,
+			Name: dataPVCName,
+		Labels: map[string]string{
+				"nfs-export.csi.k8s.io/id": volumeID,
+			},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			StorageClassName: &backendSc,
+			StorageClassName: &dataSC,
 			AccessModes: []corev1.PersistentVolumeAccessMode{
 				corev1.ReadWriteOnce,
 			},
@@ -122,26 +140,26 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		},
 	}
 
-	backendPvc, err := cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Get(context.TODO(), backendPvcName, metav1.GetOptions{})
-	if err != nil { // check if backend PVC already exists. Needs a more strict verification here
-		backendPvc, err = cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Create(context.TODO(),backendPvcDef, metav1.CreateOptions{})
+	dataPVC, err := cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(dataNamespace).Get(context.TODO(), dataPVCName, metav1.GetOptions{})
+	if err != nil { // check if nfs PVC already exists. Needs a more strict verification here
+		dataPVC, err = cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(dataNamespace).Create(context.TODO(),dataPVCDef, metav1.CreateOptions{})
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, status.Error(codes.Canceled, err.Error())
 		}
 	}
-	
-    backendPvcUid := string(backendPvc.ObjectMeta.UID)
-	klog.V(2).Infof("Backend PVC uid is: %s", backendPvcUid )
+    dataPVCUID := dataPVC.ObjectMeta.UID
+	klog.V(2).Infof("Backend PVC uid is: %s", dataPVCUID)
 
+	// nfs PVC, POD and SVC all use the same name
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      backendPvcUid, // CSI Volume Handle, needs improvement here
+			VolumeId:      volumeID, // CSI Volume Handle, needs improvement here
 			CapacityBytes: 0, // by setting it to zero, Provisioner will use PVC requested size as PV size
 			VolumeContext: map[string]string{
-				"backendVolumeClaim"  	: backendPvcName,
-				"backendNamespace" 	  	: backendNs,
-				"backendStorageClass" 	: backendSc,
-				"backendPodImage"     	: backendImg,
+				paramDataVolumeClaim : dataPVCName,
+				paramDataNamespace	 : dataNamespace,
+				paramNfsServerImage	 : nfsServerImage,
+				paramNfsHostsAllow   : nfsHostsAllow,
 			},
 		},
 	}, nil
@@ -153,14 +171,32 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	if volumeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is empty")
 	}
+
+	nfsPV, err := getPvById(cs.Driver.clientSet, volumeID)
+	if err != nil {
+		klog.V(2).Infof("Cannot find nfs PV by ID: %s", volumeID )
+		return &csi.DeleteVolumeResponse{}, nil
+	}
+
+	dataPVCName := nfsPV.Spec.PersistentVolumeSource.CSI.VolumeAttributes["nfsVolumeClaim"]
+	dataNamespace := nfsPV.Spec.PersistentVolumeSource.CSI.VolumeAttributes["nfsNamespace"]
+	klog.V(2).Infof("Data PVC Name is: %s", dataPVCName)
+	klog.V(2).Infof("Data PVC Namespace is: %s", dataNamespace )
+	err = cs.Driver.clientSet.CoreV1().PersistentVolumeClaims(dataNamespace).Delete(context.TODO(), dataPVCName, metav1.DeleteOptions{})
+	if err != nil {
+		klog.V(2).Infof("Cannot delete NFS PVC: ", err )
+	}
+
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
 func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	// klog.V(2).Infof("Controller Publish is here!" )
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
 func (cs *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	/// klog.V(2).Infof("Controller Unpublish is here!" )
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
@@ -220,11 +256,6 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 func isValidVolumeCapabilities(volCaps []*csi.VolumeCapability) error {
 	if len(volCaps) == 0 {
 		return fmt.Errorf("volume capabilities missing in request")
-	}
-	for _, c := range volCaps {
-		if c.GetBlock() != nil {
-			return fmt.Errorf("block volume capability not supported")
-		}
 	}
 	return nil
 }

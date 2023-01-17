@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-GANESHA_EXPORT=${1:-/export}
+GANESHA_CLIENTS=${HOSTS_ALLOW:-'*'}
 
 # Options for starting Ganesha
 : ${GANESHA_LOGFILE:="/dev/stdout"}
@@ -9,7 +9,7 @@ GANESHA_EXPORT=${1:-/export}
 : ${GANESHA_OPTIONS:="-N NIV_EVENT"} # NIV_DEBUG
 : ${GANESHA_EPOCH:=""}
 : ${GANESHA_EXPORT_ID:="77"}
-# : ${GANESHA_EXPORT:="/export"}
+: ${GANESHA_EXPORT:="/export"}
 # : ${GANESHA_ACCESS:="*"}
 # : ${GANESHA_ROOT_ACCESS:="*"}
 # : ${GANESHA_NFS_PROTOCOLS:="3,4"}
@@ -44,6 +44,11 @@ EXPORT
 		# Exporting FSAL
 		FSAL {
 			Name = VFS;
+		}
+
+		# Client Rule
+		CLIENT {
+			Clients = ${GANESHA_CLIENTS};
 		}
 }
 

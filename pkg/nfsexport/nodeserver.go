@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"encoding/json"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/net/context"
@@ -31,17 +32,19 @@ import (
 	"k8s.io/kubernetes/pkg/volume"
 	mount "k8s.io/mount-utils"
 
-	"time"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"github.com/hexops/valast"
+	//"github.com/hexops/valast"
 )
 
 // NodeServer driver
 type NodeServer struct {
 	Driver  *Driver
 	mounter mount.Interface
+	localPath string
+	exportPath string
 }
 
 // NodePublishVolume mount the volume
@@ -60,33 +63,28 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, status.Error(codes.InvalidArgument, "Target path not provided")
 	}
 
-
 	mountOptions := volCap.GetMount().GetMountFlags()
 	if req.GetReadonly() {
 		mountOptions = append(mountOptions, "ro")
 	}
-
-	var backendPvcName, backendNs, backendImg string
-	subDirReplaceMap := map[string]string{}
-
-	bs, _ := json.Marshal(req.GetVolumeContext())
-    klog.V(2).Infof("VolumeContext: %s", string(bs))
-
+	
+	// Parse parameters
 	mountPermissions := ns.Driver.mountPermissions
+	var dataPVCName, dataNamespace, nfsServerImage, nfsHostsAllow, appPodName, appPodNamespace string
 	for k, v := range req.GetVolumeContext() {
 		switch strings.ToLower(k) {
-		case paramBackendVolumeClaim:
-			backendPvcName = v
-		case paramBackendNamespace:
-			backendNs = v
-		case paramBackendPodImage:
-			backendImg = v
-		case pvcNamespaceKey:
-			subDirReplaceMap[pvcNamespaceMetadata] = v
-		case pvcNameKey:
-			subDirReplaceMap[pvcNameMetadata] = v
-		case pvNameKey:
-			subDirReplaceMap[pvNameMetadata] = v
+		case podNameKey:
+			appPodName = v
+		case podNamespaceKey:
+			appPodNamespace = v
+		case paramDataVolumeClaim:
+			dataPVCName = v
+		case paramDataNamespace:
+			dataNamespace = v
+		case paramNfsServerImage:
+			nfsServerImage = v
+		case paramNfsHostsAllow:
+			nfsHostsAllow = v
 		case mountOptionsField:
 			if v != "" {
 				mountOptions = append(mountOptions, v)
@@ -100,210 +98,182 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			}
 		}
 	}
-
-
-	if backendPvcName == "" {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramBackendVolumeClaim))
+	if dataPVCName == "" {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramDataVolumeClaim))
 	}
-	if backendNs == "" {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramBackendNamespace))
+	if dataNamespace == "" {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramDataNamespace))
+	}
+	if nfsServerImage == "" {
+		nfsServerImage = "daocloud.io/piraeus/nfs-ganesha:latest"
 	}
 
-	// Check if backend PVC exists
-	backendPvc, err := ns.Driver.clientSet.CoreV1().PersistentVolumeClaims(backendNs).Get(context.TODO(), backendPvcName, metav1.GetOptions{})
+	// Check if nfs PVC exists
+	dataPVC, err := ns.Driver.clientSet.CoreV1().PersistentVolumeClaims(dataNamespace).Get(context.TODO(), dataPVCName, metav1.GetOptions{})
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	backendPvcUid := backendPvc.ObjectMeta.UID
+	dataPVCUID := dataPVC.ObjectMeta.UID
 
-	// Create backend Service
-	backendSvcName := backendPvcName
-	klog.V(2).Infof("Backend Service \"%s\"", backendSvcName )
-	backendSvcDef := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: backendSvcName,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         "v1",
-					Kind:               "PersistentVolumeClaim",
-					Name:               backendPvcName,
-					UID:                backendPvcUid,
+	// Create nfs statefulset
+	nfsSTSName := volumeID
+	nfsSVCName := volumeID
+	_, err = ns.Driver.clientSet.AppsV1().StatefulSets(dataNamespace).Get(context.TODO(), nfsSTSName, metav1.GetOptions{})
+	if err == nil { 
+		klog.V(2).Infof("Found existing NFS Statefulset: %s", nfsSTSName)
+	} else {
+		klog.V(2).Infof("Creating NFS Statefulset: %s", nfsSTSName)
+		hostPathType := corev1.HostPathDirectoryOrCreate
+		mountPropagationMode := corev1.MountPropagationBidirectional
+		nfsSTSDef := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nfsSTSName,
+				Labels: map[string]string{
+					"nfs-export.csi.k8s.io/id": volumeID,
 				},
-			},
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-					"nfs-export.csi.k8s.io/backend-pvc": backendPvcName,
-				},
-			Type: corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:		"nfs",
-					Protocol:	corev1.ProtocolTCP,
-					Port:		2049,
-				},
-				{
-					Name:		"rpc-tcp",
-					Protocol:	corev1.ProtocolTCP,
-					Port:		111,
-				},
-				{
-					Name:		"rpc-udp",
-					Protocol:	corev1.ProtocolUDP,
-					Port:		111,
-				},
-			},
-		},
-	}
-
-	_, err = ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
-	if err != nil {
-		_, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Create(context.TODO(), backendSvcDef, metav1.CreateOptions{})
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-	}
-
-	backendClusterIp := ""
-	for {
-		time.Sleep(1 * time.Second)
-		klog.V(2).Infof("Wait for backend service to be ready: %s", backendSvcName)
-		backendSvc, err := ns.Driver.clientSet.CoreV1().Services(backendNs).Get(context.TODO(), backendSvcName, metav1.GetOptions{})
-		if err == nil {
-			backendClusterIp = backendSvc.Spec.ClusterIP;
-			klog.V(2).Infof("Backend IP is \"%s\"", backendClusterIp)
-		} else {
-			klog.V(2).Infof("Waiting for Backend Service to get ready: \"%s\"", backendSvcName)
-		}
-		if backendClusterIp != "" {
-			break
-		} 
-	}
-
-	// Create backend Pod to connect backend SVC with backend PVC
-	backendPodName := backendPvcName
-	klog.Infof("Creating backend POD: \"%s\"", backendPodName)
-
-	backendPodDef := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: backendPodName,
-			Labels: map[string]string{
-				"nfs-export.csi.k8s.io/backend-pvc": backendPvcName,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         "v1",
-					Kind:               "PersistentVolumeClaim",
-					Name:               backendPvcName,
-					UID:                backendPvcUid,
-				},
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "export",
-					Image: backendImg,
-					ImagePullPolicy: corev1.PullAlways,
-					SecurityContext: &corev1.SecurityContext{
-						Privileged: valast.Addr(true).(*bool),
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "v1",
+						Kind:               "PersistentVolumeClaim",
+						Name:               dataPVCName,
+						UID:                dataPVCUID,
 					},
-					// SecurityContext: &corev1.SecurityContext{
-					// 	Capabilities: &corev1.Capabilities{
-					// 		Add: []corev1.Capability{
-					// 			"SYS_ADMIN",
-					// 			"SETPCAP",
-					// 			"DAC_READ_SEARCH",
-					// 		},
-					// 	},
-					// },
-					Args: []string{
-						"/export",
+				},
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: Ptr(int32(1)),
+				UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+					Type: appsv1.OnDeleteStatefulSetStrategyType,	
+				},
+				ServiceName: nfsSVCName,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"nfs-export.csi.k8s.io/id": volumeID,
 					},
-					Ports: []corev1.ContainerPort{
-						{
-							Name:          "nfs",
-							Protocol:      corev1.ProtocolTCP,
-							ContainerPort: 2049,
-						},
-						{
-							Name:          "rpc-tcp",
-							Protocol:      corev1.ProtocolTCP,
-							ContainerPort: 111,
-						},
-						{
-							Name:          "rpc-udp",
-							Protocol:      corev1.ProtocolUDP,
-							ContainerPort: 111,
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"nfs-export.csi.k8s.io/id": volumeID,
 						},
 					},
-					ReadinessProbe: &corev1.Probe {
-						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromString("nfs"),
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyAlways,
+						TerminationGracePeriodSeconds: Ptr(int64(30)),
+						Containers: []corev1.Container{
+							{
+								Name:  "export",
+								Image: nfsServerImage,
+								ImagePullPolicy: corev1.PullAlways,
+								SecurityContext: &corev1.SecurityContext{
+									Privileged: Ptr(true),
+								},
+								// SecurityContext: &corev1.SecurityContext{
+								// 	Capabilities: &corev1.Capabilities{
+								// 		Add: []corev1.Capability{
+								// 			"SYS_ADMIN",
+								// 			"SETPCAP",
+								// 			"DAC_READ_SEARCH",
+								// 		},
+								// 	},
+								// },
+								Env: []corev1.EnvVar{
+									{
+										Name: "HOSTS_ALLOW",
+										Value: nfsHostsAllow,
+									},
+								},
+								Ports: []corev1.ContainerPort{
+									{
+										Name:          "nfs",
+										Protocol:      corev1.ProtocolTCP,
+										ContainerPort: 2049,
+									},
+									{
+										Name:          "rpc-tcp",
+										Protocol:      corev1.ProtocolTCP,
+										ContainerPort: 111,
+									},
+									{
+										Name:          "rpc-udp",
+										Protocol:      corev1.ProtocolUDP,
+										ContainerPort: 111,
+									},
+								},
+								ReadinessProbe: &corev1.Probe {
+									ProbeHandler: corev1.ProbeHandler{
+										TCPSocket: &corev1.TCPSocketAction{
+												Port: intstr.FromString("nfs"),
+										},
+									},
+									InitialDelaySeconds: 1,
+									PeriodSeconds: 1,
+									SuccessThreshold: 3,
+								},
+								VolumeMounts: []corev1.VolumeMount{
+									{
+										Name:			  "volumes",
+										MountPath:		  "/volumes",
+										MountPropagation: &mountPropagationMode,
+									},
+									{
+										Name:	   "data",
+										MountPath: "/volumes/" + volumeID,
+									},
+									{
+										Name:	   "data",
+										MountPath: "/export",
+									},
+								},
 							},
 						},
-						InitialDelaySeconds: 1,
-						PeriodSeconds: 1,
-						SuccessThreshold: 3,
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:			  "share",
-							MountPath:		  "/share",
-							MountPropagation: valast.Addr(corev1.MountPropagationMode("Bidirectional")).(*corev1.MountPropagationMode),
-						},
-						{
-							Name:	   "export",
-							MountPath: "/export",
-						},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "share", 
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "export",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: backendPvcName,
+						Volumes: []corev1.Volume{
+							{
+								Name: "volumes", 
+								VolumeSource: corev1.VolumeSource{
+									HostPath: &corev1.HostPathVolumeSource{
+										Path: "/var/lib/csi-nfs-export/volumes/",
+										Type: &hostPathType,
+									},
+								},
+							},
+							{
+								Name: "data",
+								VolumeSource: corev1.VolumeSource{
+									PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+										ClaimName: dataPVCName,
+									},
+								},
+							},
 						},
 					},
 				},
 			},
-		},
-	}
-
-	_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Get(context.TODO(), backendPodName, metav1.GetOptions{})
-	if err != nil {
-		_, err = ns.Driver.clientSet.CoreV1().Pods(backendNs).Create(context.TODO(), backendPodDef, metav1.CreateOptions{})
+		}
+		_, err = ns.Driver.clientSet.AppsV1().StatefulSets(dataNamespace).Create(context.TODO(), nfsSTSDef, metav1.CreateOptions{})
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			klog.V(2).Infof("Failed to create NFS Statefulset: %s", nfsSTSName)
+			return nil, status.Error(codes.Canceled, err.Error())
 		}
 	}
 
 	// Wait for Pod to be ready
-	for {
-		time.Sleep(1 * time.Second)
-		klog.V(2).Infof("Wait for backend POD to be ready: %s", backendPodName)
-		backendPod, err := ns.Driver.clientSet.CoreV1().Pods(backendNs).Get(context.TODO(), backendPodName, metav1.GetOptions{})
-		if err == nil && backendPod.Status.Phase == corev1.PodRunning {
-			break
-		} 
+	nfsServerName := nfsSTSName + "-0"
+	// nfsServer, _ := ns.Driver.clientSet.CoreV1().Pods(dataNamespace).Get(context.TODO(), nfsServerName, metav1.GetOptions{})
+	// nfsServerUid:= nfsServer.ObjectMeta.UID
+	// klog.V(2).Infof("Backend Pod UID is: \"%s\"", nfsServerUid )
+
+	klog.V(2).Infof("Waiting for Pod to be ready: %s", nfsServerName)
+	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsServerName, 5 * time.Minute)
+	if err != nil {
+		klog.V(2).Infof("Pod wait has timed out: %s", nfsServerName)
+		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
-	// Mount nfs export
-	server  := backendClusterIp
-	baseDir := "/"
+	klog.V(2).Infof("App Pod Name is: %s", appPodName)
+	klog.V(2).Infof("App Pod Namespace is: %s", appPodNamespace)
 
-	server = getServerFromSource(server)
-	source := fmt.Sprintf("%s:%s", server, baseDir)
-
+	// Mount nfs export path for local path
 	notMnt, err := ns.mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -319,15 +289,95 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	klog.V(2).Infof("NodePublishVolume: volumeID(%v) source(%s) targetPath(%s) mountflags(%v)", volumeID, source, targetPath, mountOptions)
-
-	localSource := "/var/snap/microk8s/common/default-storage/local" // experimental
-	if localSource != "" {
-		err = ns.mounter.Mount(localSource, targetPath, "", []string{"bind"})
+	// Mount local first, if fails, then mount remote
+	source := "/volumes/" + volumeID
+	err = ns.mounter.Mount(source, targetPath, "", []string{"bind"})
+	if err == nil {
+		appPod, err := ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Get(context.TODO(), appPodName, metav1.GetOptions{})
+		annotations := appPod.ObjectMeta.Annotations
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations["controller.kubernetes.io/pod-deletion-cost"] = "2147483647"
+		appPod.SetAnnotations(annotations)
+		if err != nil {
+			klog.V(2).Infof("Failed to get the App Pod: %s", err)
+		} else {
+			_, err = ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Update(context.TODO(), appPod, metav1.UpdateOptions{})
+			if err != nil {
+				klog.V(2).Infof("Failed to annotate the App Pod: %s", err)
+			} else {
+				klog.V(2).Infof("Annotated the local Pod with the highest deletion-cost: %s", appPodName )
+			}
+		}
 	} else {
+		// Create nfs Service
+		nfsSVC, err := ns.Driver.clientSet.CoreV1().Services(dataNamespace).Get(context.TODO(), nfsSVCName, metav1.GetOptions{})
+		if err == nil {
+			klog.V(2).Infof("Found existing NFS Service: \"%s\"", nfsSVCName )
+		} else {
+			klog.V(2).Infof("Creating NFS Service: \"%s\"", nfsSVCName )
+			nfsSVCDef := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nfsSVCName,
+					Labels: map[string]string{
+						"nfs-export.csi.k8s.io/id": volumeID,
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "v1",
+							Kind:               "PersistentVolumeClaim",
+							Name:               dataPVCName,
+							UID:                dataPVCUID,
+						},
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{
+							"nfs-export.csi.k8s.io/id": volumeID,
+						},
+					Type: corev1.ServiceTypeClusterIP,
+					Ports: []corev1.ServicePort{
+						{
+							Name:		"nfs",
+							Protocol:	corev1.ProtocolTCP,
+							Port:		2049,
+						},
+						{
+							Name:		"rpc-tcp",
+							Protocol:	corev1.ProtocolTCP,
+							Port:		111,
+						},
+						{
+							Name:		"rpc-udp",
+							Protocol:	corev1.ProtocolUDP,
+							Port:		111,
+						},
+					},
+				},
+			}
+			nfsSVC, err = ns.Driver.clientSet.CoreV1().Services(dataNamespace).Create(context.TODO(), nfsSVCDef, metav1.CreateOptions{})
+			if err != nil {
+				klog.V(2).Infof("Failed to create service: \"%s\"", nfsSVCName)
+				return nil, status.Error(codes.Canceled, err.Error())
+			}
+		}
+		nfsIP := nfsSVC.Spec.ClusterIP;
+		klog.V(2).Infof("NFS IP is \"%s\"", nfsIP)
+
+		// Wait for NFS to be online
+		klog.V(2).Infof("Waiting for NFS TCP to be ok: %s:2049", nfsIP)
+		err = waitForTcpReady(nfsIP, 2049, time.Minute)
+		if err != nil {
+			klog.V(2).Infof("TCP wait has timed out: %s:2049", nfsIP)
+			return nil, status.Error(codes.Canceled, err.Error())
+		}
+		source =  nfsIP + ":/"
 		err = ns.mounter.Mount(source, targetPath, "nfs", mountOptions)
 	}
-	
+
+	klog.V(2).Infof("NodePublishVolume: volumeID(%v) source(%s) targetPath(%s) mountflags(%v)", volumeID, source, targetPath, mountOptions)
+
 	if err != nil {
 		if os.IsPermission(err) {
 			return nil, status.Error(codes.PermissionDenied, err.Error())
@@ -345,6 +395,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	} else {
 		klog.V(2).Infof("skip chmod on targetPath(%s) since mountPermissions is set as 0", targetPath)
 	}
+	
 	klog.V(2).Infof("volume(%s) mount %s on %s succeeded", volumeID, source, targetPath)
 	
 	return &csi.NodePublishVolumeResponse{}, nil
@@ -368,22 +419,72 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	}
 	klog.V(2).Infof("NodeUnpublishVolume: unmount volume %s on %s successfully", volumeID, targetPath)
 
+	// Get nfs PV
+	nfsPV, err := getPvById(ns.Driver.clientSet, volumeID)
+	if err != nil {
+		klog.V(2).Infof("Cannot find nfs PV by ID: %s", volumeID )
+		return &csi.NodeUnpublishVolumeResponse{}, nil
+	} 
+
+	// Check if there is still any application POD using the nfs PVC 
+	nfsPVCName :=  nfsPV.Spec.ClaimRef.Name
+	nfsPVCNamespace :=  nfsPV.Spec.ClaimRef.Namespace
+	klog.V(2).Infof("Frontend PVC Namespace is: %s", nfsPVCNamespace )
+	klog.V(2).Infof("Frontend PVC Name is: %s", nfsPVCName)
+	if nfsPVCName != "" && nfsPVCNamespace != "" {
+		podList, _ := ns.Driver.clientSet.CoreV1().Pods(nfsPVCNamespace).List(context.TODO(), metav1.ListOptions{})
+		for _, pod := range podList.Items {
+			for _, volume := range pod.Spec.Volumes {
+				if volume.PersistentVolumeClaim !=nil && volume.PersistentVolumeClaim.ClaimName == nfsPVCName {
+					klog.V(2).Infof("Pod %s is still using the PV", pod.ObjectMeta.Name )
+					return &csi.NodeUnpublishVolumeResponse{}, nil
+				}
+			}
+		}
+	}
+
+	// Delete nfs sts and svc
+	var dataPVCName, dataNamespace string
+	volumeAttributes := nfsPV.Spec.PersistentVolumeSource.CSI.VolumeAttributes
+	bs, _ := json.Marshal(volumeAttributes)
+    klog.V(2).Infof("VolumeContext: %s", string(bs))
+	for k, v := range volumeAttributes {
+		switch strings.ToLower(k) {
+		case paramDataVolumeClaim:
+			dataPVCName = v
+		case paramDataNamespace:
+			dataNamespace = v
+		}
+	}
+	nfsSTSName := volumeID
+	nfsSVCName := volumeID
+	klog.V(2).Infof("Backend PVC Namespace is: %s", dataNamespace )
+	klog.V(2).Infof("Backend PVC Name is: %s", dataPVCName )
+	klog.V(2).Infof("Backend StatefulSet Name is: %s", nfsSTSName)
+	klog.V(2).Infof("Backend Service Name is: %s", nfsSVCName)
+
+	err = ns.Driver.clientSet.AppsV1().StatefulSets(dataNamespace).Delete(context.TODO(), nfsSTSName, metav1.DeleteOptions{})
+	if err == nil {
+		klog.V(2).Infof("Deleted nfs STS %s", nfsSTSName)
+	} else {
+		klog.V(2).Infof("Failed to delete nfs STS %s: %s", nfsSTSName, err)
+	}
+
+	err = ns.Driver.clientSet.CoreV1().Services(dataNamespace).Delete(context.TODO(), nfsSVCName, metav1.DeleteOptions{})
+	if err == nil {
+		klog.V(2).Infof("Deleted nfs SVC %s", nfsSVCName)
+	} else {
+		klog.V(2).Infof("Failed to delete nfs SVC %s: %s", nfsSVCName, err)
+	}
+
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
-// NodeGetInfo return info of the node on which this plugin is running
-func (ns *NodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	return &csi.NodeGetInfoResponse{
-		NodeId: ns.Driver.nodeID,
-	}, nil
+// NodeStageVolume stage volume
+func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }
 
-// NodeGetCapabilities return the capabilities of the Node plugin
-func (ns *NodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	return &csi.NodeGetCapabilitiesResponse{
-		Capabilities: ns.Driver.nscap,
-	}, nil
-}
 
 // NodeGetVolumeStats get volume stats
 func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
@@ -450,27 +551,26 @@ func (ns *NodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 	}, nil
 }
 
-// NodeUnstageVolume unstage volume
-func (ns *NodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "")
+// NodeGetInfo return info of the node on which this plugin is running
+func (ns *NodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	return &csi.NodeGetInfoResponse{
+		NodeId: ns.Driver.nodeID,
+	}, nil
 }
 
-// NodeStageVolume stage volume
-func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+// NodeGetCapabilities return the capabilities of the Node plugin
+func (ns *NodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
+	return &csi.NodeGetCapabilitiesResponse{
+		Capabilities: ns.Driver.nscap,
+	}, nil
+}
+
+// NodeUnstageVolume unstage volume
+func (ns *NodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
 // NodeExpandVolume node expand volume
 func (ns *NodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "")
-}
-
-func makeDir(pathname string) error {
-	err := os.MkdirAll(pathname, os.FileMode(0755))
-	if err != nil {
-		if !os.IsExist(err) {
-			return err
-		}
-	}
-	return nil
 }

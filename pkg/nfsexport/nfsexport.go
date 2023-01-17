@@ -17,8 +17,6 @@ limitations under the License.
 package nfsexport
 
 import (
-	"strings"
-
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"k8s.io/klog/v2"
 	mount "k8s.io/mount-utils"
@@ -53,16 +51,16 @@ type Driver struct {
 }
 
 const (
-
 	paramServer	= "server"
 	paramShare  = "share"
 	paramSubDir = "subdir"
 
 	DefaultDriverName         = "nfs-export.csi.k8s.io"
-	paramBackendVolumeClaim	  = "backendvolumeclaim"
-	paramBackendStorageClass  = "backendstorageclass"
-	paramBackendPodImage 	  = "backendpodimage"
-	paramBackendNamespace     = "backendnamespace"
+	paramDataVolumeClaim	  = "datavolumeclaim"
+	paramDataStorageClass     = "datastorageclass"
+	paramDataNamespace     	  = "datanamespace"
+	paramNfsServerImage 	  = "nfsserverimage"
+	paramNfsHostsAllow	      = "nfshostsallow"
 
 	mountOptionsField         = "mountoptions"
 	mountPermissionsField 	  = "mountpermissions"
@@ -74,6 +72,9 @@ const (
 	pvcNameMetadata           = "${pvc.metadata.name}"
 	pvcNamespaceMetadata      = "${pvc.metadata.namespace}"
 	pvNameMetadata            = "${pv.metadata.name}"
+
+	podNameKey				  = "csi.storage.k8s.io/pod.name"
+	podNamespaceKey			  = "csi.storage.k8s.io/pod.namespace"
 )
 
 func NewDriver(options *DriverOptions, clientset *kubernetes.Clientset) *Driver {
@@ -88,16 +89,17 @@ func NewDriver(options *DriverOptions, clientset *kubernetes.Clientset) *Driver 
 		workingMountDir:  options.WorkingMountDir,
 
 		clientSet: 		  clientset,
-
-		
 	}
 
 	n.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		// csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
+		// csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME, // require volumeattachments
 	})
 
 	n.AddNodeServiceCapabilities([]csi.NodeServiceCapability_RPC_Type{
+		// csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.NodeServiceCapability_RPC_UNKNOWN,
@@ -146,19 +148,4 @@ func (n *Driver) AddNodeServiceCapabilities(nl []csi.NodeServiceCapability_RPC_T
 		nsc = append(nsc, NewNodeServiceCapability(n))
 	}
 	n.nscap = nsc
-}
-
-func IsCorruptedDir(dir string) bool {
-	_, pathErr := mount.PathExists(dir)
-	return pathErr != nil && mount.IsCorruptedMnt(pathErr)
-}
-
-// replaceWithMap replace key with value for str
-func replaceWithMap(str string, m map[string]string) string {
-	for k, v := range m {
-		if k != "" {
-			str = strings.ReplaceAll(str, k, v)
-		}
-	}
-	return str
 }

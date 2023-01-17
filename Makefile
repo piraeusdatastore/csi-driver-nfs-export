@@ -12,47 +12,67 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-build:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -x -ldflags="-extldflags=-static" -o ./bin/ ./cmd/nfsexportplugin
+REG = daocloud.io/piraeus
 
-cleanup:
-	kubectl -n csi-nfs-export delete pvc,pod,svc --all --wait=false
+build:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+	go build -x -ldflags="-extldflags=-static" -o ./bin/ ./cmd/nfsexportplugin
 
 clean:
 	rm -vfr ./bin/nfsexportplugin
 
-run-local-provisioner: 
-	./bin/csi-provisioner --kubeconfig ~/.kube/config -v 5 --csi-address /usr/local/var/run/csi/socket
+docker: clean build
+	docker build -t	$(REG)/csi-nfs-export-plugin .
+	docker push		$(REG)/csi-nfs-export-plugin || \
+	docker push		$(REG)/csi-nfs-export-plugin
 
-run-local-plugin:
-	go run ./cmd/nfsexportplugin/ -v 5 --endpoint unix:///usr/local/var/run/csi/socket
+nfs-ganesha:
+	cd exporter/nfs-ganesha && \
+	docker build -t $(REG)/nfs-ganesha .
+	docker push		$(REG)/nfs-ganesha || \
+	docker push		$(REG)/nfs-ganesha
 
-run-local-nfs-server:
+nfs-server:
+	cd exporter/nfs-server && \
+	docker build -t $(REG)/nfs-server .
+	docker push		$(REG)/nfs-server || \
+	docker push		$(REG)/nfs-server
+
+
+	
+.PHONY: deploy
+deploy:
+	kubectl apply -f deploy
+	kubectl rollout status deploy,ds --timeout=90s
+	kubectl get pod -l nfs-export.csi.k8s.io/server
+
+undeploy: 
+	kubectl delete -f deploy/ || true
+	kubectl wait po -l nfs-export.csi.k8s.io/server --for=delete --timeout=90s
+	kubectl get pod -l nfs-export.csi.k8s.io/server
+
+.PHONY: test
+test:
+	kubectl apply -f example/storageclass.yaml
+	kubectl apply -f example/pvc-dynamic.yaml
+	kubectl apply -f example/deployment-dynamic.yaml
+	watch kubectl get pod -o wide -l nfs-export.csi.k8s.io/id
+
+untest:
+	kubectl delete -f example/deployment-dynamic.yaml || true
+	kubectl delete -f example/pvc-dynamic.yaml || true
+	kubectl delete sts,svc,pvc -l nfs-export.csi.k8s.io/id
+	kubectl delete -f example/storageclass.yaml || true
+	watch kubectl get pod -o wide -l nfs-export.csi.k8s.io/id
+
+logc:
+	kubectl logs -f deploy/csi-nfs-export-controller nfs-export
+
+start-local-nfs-server:
 	docker rm -f nfs-ganesha
 	docker run --name nfs-ganesha \
 		--privileged \
 		-d --restart=unless-stopped \
-		-v /Users/alexz/nfs:/export \
-		daocloud.io/piraeus/volume-nfs-exporter:ganesha
+		-v nfs-ganesha:/export \
+		$(REG)/nfs-ganesha
 	docker ps | grep nfs-ganesha
-
-
-
-re: cleanup clean build
-	kubectl delete -f run/controller.yaml || true
-	kubectl -n csi-nfs-export wait deployment csi-nfs-export-controller --for=delete --timeout=90s
-	kubectl apply -f run/controller.yaml
-	kubectl -n csi-nfs-export rollout status deploy csi-nfs-export-controller --timeout=90s
-	kubectl -n csi-nfs-export get pod
-
-	kubectl delete -f run/node.yaml || true
-	kubectl -n csi-nfs-export wait ds csi-nfs-export-node --for=delete --timeout=90s
-	kubectl apply -f run/node.yaml
-	kubectl -n csi-nfs-export rollout status ds csi-nfs-export-node --timeout=90s
-	kubectl -n csi-nfs-export get pod
-
-test:
-	kubectl apply -f example/pvc-dynamic.yaml
-
-untest:
-	kubectl delete -f example/pvc-dynamic.yaml

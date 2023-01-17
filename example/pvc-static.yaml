@@ -1,4 +1,3 @@
----
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
@@ -9,5 +8,26 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  volumeName: pv-nfs
+  volumeName: pv-nfs-export
   storageClassName: csi-nfs-export
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs-export
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: csi-nfs-export
+  mountOptions:
+    - nfsvers=4.1
+  csi:
+    driver: nfs-export.csi.k8s.io
+    volumeHandle: nfs-d4aeb932-5403-40ed-9e0e-f60639ef6ebe # generate by uuigen
+    volumeAttributes:
+      dataVolumeClaim: pvc-local
+      dataNamespace: default
+  

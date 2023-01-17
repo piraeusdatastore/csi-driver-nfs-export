@@ -3,18 +3,20 @@ kind: Deployment
 apiVersion: apps/v1
 metadata:
   name: csi-nfs-export-controller
-  namespace: csi-nfs-export
+  namespace: default
+  labels:
+    nfs-export.csi.k8s.io/server: controller
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: csi-nfs-export-controller
+      nfs-export.csi.k8s.io/server: controller
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: csi-nfs-export-controller
+        nfs-export.csi.k8s.io/server: controller
     spec:
       terminationGracePeriodSeconds: 0
       hostNetwork: true  # controller also needs to mount nfs to create dir
@@ -34,22 +36,39 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: csi-provisioner
-          image: daocloud.io/daocloud/csi-provisioner:v3.2.0
+          image: daocloud.io/piraeus/csi-provisioner:v3.2.0
           args:
             - "-v=2"
             - "--csi-address=$(ADDRESS)"
             - "--leader-election"
-            - "--leader-election-namespace=csi-nfs-export"
+            - "--leader-election-namespace=$(NAMESPACE)"
             - "--extra-create-metadata=true"
           env:
             - name: ADDRESS
               value: /csi/csi.sock
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
           resources: {}
+        # - name: csi-attacher
+        #   image: daocloud.io/piraeus/csi-attacher:v3.5.0
+        #   args:
+        #     - "-v=2"
+        #     - "--csi-address=$(ADDRESS)"
+        #     - "--leader-election"
+        #     - "--leader-election-namespace=$(NAMESPACE)"
+        #   env:
+        #     - name: ADDRESS
+        #       value: /csi/csi.sock
+        #   volumeMounts:
+        #     - mountPath: /csi
+        #       name: socket-dir
         - name: liveness-probe
-          image: daocloud.io/daocloud/livenessprobe:v2.7.0
+          image: daocloud.io/piraeus/livenessprobe:v2.7.0
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -60,17 +79,14 @@ spec:
               mountPath: /csi
           resources: {}
         - name: nfs-export
-          # image: daocloud.io/daocloud/nfsplugin:v4.1.0
-          # image: daocloud.io/daocloud/golang:1.18
-          image: daocloud.io/alpine
+          image: daocloud.io/piraeus/csi-nfs-export-plugin:latest
+          imagePullPolicy: Always
           securityContext:
             privileged: true
             capabilities:
               add: ["SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          imagePullPolicy: IfNotPresent
-          command:
-            - /go/cne/bin/nfsexportplugin
+          args:
             - "-v=5"
             - "--nodeid=$(NODE_ID)"
             - "--endpoint=$(CSI_ENDPOINT)"
@@ -99,8 +115,6 @@ spec:
               mountPropagation: "Bidirectional"
             - mountPath: /csi
               name: socket-dir
-            - name: github
-              mountPath: /go/cne
           resources: {}
       volumes:
         - name: pods-mount-dir
@@ -109,7 +123,3 @@ spec:
             type: Directory
         - name: socket-dir
           emptyDir: {}
-        - name: github
-          hostPath:
-            path: /media/psf/Github/rafflescity/csi-driver-nfs-export/
-            type: Directory

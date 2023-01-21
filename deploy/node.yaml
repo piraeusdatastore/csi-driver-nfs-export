@@ -107,10 +107,10 @@ spec:
               mountPath: /csi
             - name: pods-mount-dir
               mountPath: /var/snap/microk8s/common/var/lib/kubelet/pods
-              mountPropagation: "Bidirectional"
+              mountPropagation: Bidirectional
             - name: local-volumes
               mountPath: /volumes
-              mountPropagation: "Bidirectional"
+              mountPropagation: Bidirectional
           resources: {}
       volumes:
         - name: socket-dir

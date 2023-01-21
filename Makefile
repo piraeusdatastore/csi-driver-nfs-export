@@ -37,8 +37,6 @@ nfs-server:
 	docker build -t $(REG)/nfs-server .
 	docker push		$(REG)/nfs-server || \
 	docker push		$(REG)/nfs-server
-
-
 	
 .PHONY: deploy
 deploy:
@@ -60,13 +58,21 @@ test:
 
 untest:
 	kubectl delete -f example/deployment-dynamic.yaml || true
+	kubectl wait pod -l nfs-export.csi.k8s.io/id=deployment-nginx-dynamic --for=delete --timeout=90s
 	kubectl delete -f example/pvc-dynamic.yaml || true
 	kubectl delete sts,svc,pvc -l nfs-export.csi.k8s.io/id
 	kubectl delete -f example/storageclass.yaml || true
 	watch kubectl get pod -o wide -l nfs-export.csi.k8s.io/id
 
-logc:
+# Controller Log
+logc: 
 	kubectl logs -f deploy/csi-nfs-export-controller nfs-export
+
+# Local node log
+logn:
+	node=$$(kubectl get pod -o wide -l nfs-export.csi.k8s.io/id | awk '/^nfs-/{print $$7}' | head -1); \
+	pod=$$(kubectl get pod -o wide -l nfs-export.csi.k8s.io/server=node --field-selector spec.nodeName=$$node -o name); \
+	kubectl logs -f $$pod nfs-export
 
 start-local-nfs-server:
 	docker rm -f nfs-ganesha

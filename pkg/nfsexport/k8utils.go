@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 	"strconv"
+	"os"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -62,10 +63,31 @@ func isPodRunning(c kubernetes.Interface, podName, namespace string) wait.Condit
 	}
 }
 
+func isPodNotRunning(c kubernetes.Interface, podName, namespace string) wait.ConditionFunc {
+	return func() (bool, error) {
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+		if err != nil {
+			return true, err
+		}
+		klog.V(2).Infof("POD %s state: %s", podName, pod.Status.Phase)
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			return false, nil
+		case corev1.PodFailed, corev1.PodSucceeded:
+			return true, conditions.ErrPodCompleted
+		}
+		return true, nil
+	}
+}
+
 // Poll up to timeout seconds for pod to enter running state.
 // Returns an error if the pod never enters the running state.
 func waitForPodRunning(c kubernetes.Interface, namespace, podName string, timeout time.Duration) error {
 	return wait.PollImmediate(time.Second, timeout, isPodRunning(c, podName, namespace))
+}
+
+func waitForPodNotRunning(c kubernetes.Interface, namespace, podName string, timeout time.Duration) error {
+	return wait.PollImmediate(time.Second, timeout, isPodNotRunning(c, podName, namespace))
 }
 
 
@@ -128,4 +150,12 @@ func Ptr[T any](v T) *T {
     return &v
 }
 
-
+func dirExists(dirname string) bool {
+	info, err := os.Stat(dirname)
+	if err == nil && info.IsDir() {
+	   return true
+	} else {
+		klog.V(2).Infof("%s", err)
+	}
+	return false
+ }

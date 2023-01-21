@@ -43,8 +43,6 @@ import (
 type NodeServer struct {
 	Driver  *Driver
 	mounter mount.Interface
-	localPath string
-	exportPath string
 }
 
 // NodePublishVolume mount the volume
@@ -258,15 +256,15 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// Wait for Pod to be ready
-	nfsServerName := nfsSTSName + "-0"
-	// nfsServer, _ := ns.Driver.clientSet.CoreV1().Pods(dataNamespace).Get(context.TODO(), nfsServerName, metav1.GetOptions{})
+	nfsPodName := nfsSTSName + "-0"
+	// nfsServer, _ := ns.Driver.clientSet.CoreV1().Pods(dataNamespace).Get(context.TODO(), nfsPodName, metav1.GetOptions{})
 	// nfsServerUid:= nfsServer.ObjectMeta.UID
 	// klog.V(2).Infof("Backend Pod UID is: \"%s\"", nfsServerUid )
 
-	klog.V(2).Infof("Waiting for Pod to be ready: %s", nfsServerName)
-	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsServerName, 5 * time.Minute)
+	klog.V(2).Infof("Waiting for Pod to be ready: %s", nfsPodName)
+	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsPodName, 5 * time.Minute)
 	if err != nil {
-		klog.V(2).Infof("Pod wait has timed out: %s", nfsServerName)
+		klog.V(2).Infof("Pod wait has timed out: %s", nfsPodName)
 		return nil, status.Error(codes.Canceled, err.Error())
 	}
 
@@ -291,23 +289,25 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	// Mount local first, if fails, then mount remote
 	source := "/volumes/" + volumeID
-	err = ns.mounter.Mount(source, targetPath, "", []string{"bind"})
-	if err == nil {
-		appPod, err := ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Get(context.TODO(), appPodName, metav1.GetOptions{})
-		annotations := appPod.ObjectMeta.Annotations
-		if annotations == nil {
-			annotations = map[string]string{}
-		}
-		annotations["controller.kubernetes.io/pod-deletion-cost"] = "2147483647"
-		appPod.SetAnnotations(annotations)
-		if err != nil {
-			klog.V(2).Infof("Failed to get the App Pod: %s", err)
-		} else {
-			_, err = ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Update(context.TODO(), appPod, metav1.UpdateOptions{})
+	if dirExists(source) {
+		err = ns.mounter.Mount(source, targetPath, "", []string{"bind"})
+		if err == nil {
+			appPod, err := ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Get(context.TODO(), appPodName, metav1.GetOptions{})
+			annotations := appPod.ObjectMeta.Annotations
+			if annotations == nil {
+				annotations = map[string]string{}
+			}
+			annotations["controller.kubernetes.io/pod-deletion-cost"] = "2147483647"
+			appPod.SetAnnotations(annotations)
 			if err != nil {
-				klog.V(2).Infof("Failed to annotate the App Pod: %s", err)
+				klog.V(2).Infof("Failed to get the App Pod: %s", err)
 			} else {
-				klog.V(2).Infof("Annotated the local Pod with the highest deletion-cost: %s", appPodName )
+				_, err = ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Update(context.TODO(), appPod, metav1.UpdateOptions{})
+				if err != nil {
+					klog.V(2).Infof("Failed to annotate the App Pod: %s", err)
+				} else {
+					klog.V(2).Infof("Annotated the local Pod with the highest deletion-cost: %s", appPodName )
+				}
 			}
 		}
 	} else {
@@ -475,6 +475,24 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 		klog.V(2).Infof("Deleted nfs SVC %s", nfsSVCName)
 	} else {
 		klog.V(2).Infof("Failed to delete nfs SVC %s: %s", nfsSVCName, err)
+	}
+	
+	// wait for nfs pod to go down here
+	nfsPodName := nfsSTSName + "-0"
+	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsPodName, 5 * time.Minute)
+
+	// Unmount the local source path
+	localSourcePath := "/volumes/" + volumeID
+	klog.V(2).Infof("Local Path is: %s", localSourcePath)
+	if dirExists(localSourcePath) {
+		klog.V(2).Infof("NodeUnpublishVolume: unmounting volume %s on %s", volumeID, localSourcePath)
+		err = mount.CleanupMountPoint(localSourcePath, ns.mounter, true /*extensiveMountPointCheck*/)
+		if err != nil {
+			klog.V(2).Infof("NodeUnpublishVolume: failed to unmount volume %s on %s", volumeID, localSourcePath)
+		}
+		klog.V(2).Infof("NodeUnpublishVolume: unmount volume %s on %s successfully", volumeID, localSourcePath)
+	} else {
+		klog.V(2).Infof("Local Path does not exist: %s", localSourcePath)
 	}
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil

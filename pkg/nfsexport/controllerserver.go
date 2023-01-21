@@ -33,7 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"github.com/google/uuid"
+	//"github.com/google/uuid"
 )
 
 // ControllerServer controller server setting
@@ -87,7 +87,8 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	// Create BackendPVC
-	volumeID := "nfs-" + uuid.New().String()
+	// volumeID := "nfs-" + uuid.New().String()
+	volumeID := strings.Replace(nfsPVName, "pvc-", "nfs-", 1)
 	dataPVCName := volumeID
 	dataNamespace := nfsPVCNamespace
 

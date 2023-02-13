@@ -5,7 +5,7 @@ metadata:
   labels:
       nfs-export.csi.k8s.io/id: deployment-nginx-static
 spec:
-  replicas: 2
+  replicas: 6
   selector:
     matchLabels:
       nfs-export.csi.k8s.io/id: deployment-nginx-static

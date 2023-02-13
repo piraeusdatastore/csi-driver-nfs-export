@@ -2,10 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: deployment-nginx-dynamic
-  labels:
-      nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
 spec:
-  replicas: 5
+  replicas: 6
   selector:
     matchLabels:
       nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
@@ -17,19 +15,17 @@ spec:
       labels:
         nfs-export.csi.k8s.io/id: deployment-nginx-dynamic
     spec:
-      nodeSelector:
-        "kubernetes.io/os": linux
       terminationGracePeriodSeconds: 0
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
           - labelSelector:
               matchExpressions:
-              - key: name
+              - key: nfs-export.csi.k8s.io/id
                 operator: In
                 values:
                 - deployment-nginx-dynamic
-            topologyKey: topology.kubernetes.io/hostname
+            topologyKey: kubernetes.io/hostname
       containers:
         - name: deployment-nginx-dynamic
           image: daocloud.io/nginx

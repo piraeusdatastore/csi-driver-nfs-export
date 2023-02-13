@@ -7,7 +7,7 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: 10Gi
+      storage: 1Gi
   volumeName: pv-nfs-export
   storageClassName: csi-nfs-export
 ---
@@ -17,7 +17,7 @@ metadata:
   name: pv-nfs-export
 spec:
   capacity:
-    storage: 10Gi
+    storage: 1Gi
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain

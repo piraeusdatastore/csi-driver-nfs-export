@@ -1,0 +1,21 @@
+kubeletRoot: /var/snap/microk8s/common/var/lib/kubelet/ # for microk8s
+
+controllerReplicas: 1
+
+provisioner:
+  image: k8s.m.daocloud.io/sig-storage/csi-provisioner:v3.2.0
+  imagePullPolicy: IfNotPresent
+
+nodeDriverRegistrar:
+  image: k8s.m.daocloud.io/sig-storage/csi-node-driver-registrar:v2.5.1
+  imagePullPolicy: IfNotPresent
+
+livenessProbe:
+  image: k8s.m.daocloud.io/sig-storage/livenessprobe:v2.7.0
+  imagePullPolicy: IfNotPresent
+
+plugin:
+  image: daocloud.io/piraeus/csi-nfs-export-plugin:latest
+  imagePullPolicy: IfNotPresent # for devops, set it "Always"
+
+

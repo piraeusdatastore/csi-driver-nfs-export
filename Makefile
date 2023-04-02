@@ -40,12 +40,12 @@ nfs-server:
 	
 .PHONY: deploy
 deploy:
-	kubectl apply -f deploy
+	helm install csi-driver-nfs-export ./charts --set plugin.imagePullPolicy=Always
 	kubectl rollout status deploy,ds --timeout=90s
 	kubectl get pod -l nfs-export.csi.k8s.io/server
 
 undeploy: 
-	kubectl delete -f deploy/ || true
+	helm uninstall csi-driver-nfs-export
 	kubectl wait po -l nfs-export.csi.k8s.io/server --for=delete --timeout=90s
 	kubectl get pod -l nfs-export.csi.k8s.io/server
 

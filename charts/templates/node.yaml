@@ -1,0 +1,132 @@
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: csi-nfs-export-node
+  labels:
+    nfs-export.csi.k8s.io/server: node
+spec:
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      nfs-export.csi.k8s.io/server: node
+  template:
+    metadata:
+      labels:
+        nfs-export.csi.k8s.io/server: node
+    spec:
+      hostNetwork: true  # original nfs connection would be broken without hostNetwork setting
+      dnsPolicy: Default  # available values: Default, ClusterFirstWithHostNet, ClusterFirst
+      serviceAccountName: csi-nfs-export-node-sa
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - operator: "Exists"
+      containers:
+        - name: liveness-probe
+          image: {{ .Values.livenessProbe.image }}
+          imagePullPolicy: {{ .Values.livenessProbe.imagePullPolicy }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --probe-timeout=3s
+            - --health-port=29653
+            - --v=2
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources: {}
+        - name: node-driver-registrar
+          image: {{ .Values.nodeDriverRegistrar.image }}
+          imagePullPolicy: {{ .Values.nodeDriverRegistrar.imagePullPolicy }}
+          args:
+            - --v=2
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+          livenessProbe:
+            exec:
+              command:
+                - /csi-node-driver-registrar
+                - --kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)
+                - --mode=kubelet-registration-probe
+            initialDelaySeconds: 30
+            timeoutSeconds: 15
+          env:
+            - name: DRIVER_REG_SOCK_PATH
+              value: {{ .Values.kubeletRoot }}/plugins/csi-nfsplugin/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+            - mountPath: {{ .Values.kubeletRoot }}/pods
+              name: pods-mount-dir
+            # - mountPath: /pods 
+            #   name: pods-mount-dir
+            - name: local-volumes
+              mountPath: /volumes
+          resources: {}
+        - name: nfs-export
+          image: {{ .Values.plugin.image }}
+          imagePullPolicy: {{ .Values.plugin.imagePullPolicy }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          args:
+            - "-v=5"
+            - "--nodeid=$(NODE_ID)"
+            - "--endpoint=$(CSI_ENDPOINT)"
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+          ports:
+            - containerPort: 29653
+              name: healthz
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 5
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: {{ .Values.kubeletRoot }}/pods
+              mountPropagation: Bidirectional
+            - name: local-volumes
+              mountPath: /volumes
+              mountPropagation: Bidirectional
+          resources: {}
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: {{ .Values.kubeletRoot }}/plugins/csi-nfsplugin
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: {{ .Values.kubeletRoot }}/pods
+            type: Directory
+        - hostPath:
+            path: {{ .Values.kubeletRoot }}/plugins_registry
+            type: Directory
+          name: registration-dir
+        - name: local-volumes
+          hostPath:
+            path: /var/lib/csi-nfs-export/volumes/
+            type: DirectoryOrCreate

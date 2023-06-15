@@ -15,7 +15,7 @@
 
 ## Data Flow
 
-![Data Plane](img/data_flow.drawio.svg)
+![Data Plane](img/data_flow_v2.drawio.svg)
 
 ## Highlights
 

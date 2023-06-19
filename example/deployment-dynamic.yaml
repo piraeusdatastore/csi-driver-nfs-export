@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: deployment-nginx-dynamic
 spec:
-  replicas: 6
+  replicas: 3
   selector:
     matchLabels:
       nfs-export.csi.k8s.io/id: deployment-nginx-dynamic

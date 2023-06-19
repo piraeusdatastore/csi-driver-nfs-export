@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	// "regexp"
 	"encoding/json"
 	"time"
 
@@ -68,7 +69,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	
 	// Parse parameters
 	mountPermissions := ns.Driver.mountPermissions
-	var dataPVCName, dataNamespace, nfsServerImage, nfsHostsAllow, appPodName, appPodNamespace string
+	var dataPVCName, dataNamespace, nfsPodImage, nfsHostsAllow, appPodName, appPodNamespace string
 	for k, v := range req.GetVolumeContext() {
 		switch strings.ToLower(k) {
 		case podNameKey:
@@ -80,7 +81,7 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		case paramDataNamespace:
 			dataNamespace = v
 		case paramNfsServerImage:
-			nfsServerImage = v
+			nfsPodImage = v
 		case paramNfsHostsAllow:
 			nfsHostsAllow = v
 		case mountOptionsField:
@@ -102,8 +103,8 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if dataNamespace == "" {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("%v is a required parameter", paramDataNamespace))
 	}
-	if nfsServerImage == "" {
-		nfsServerImage = "daocloud.io/piraeus/nfs-ganesha:latest"
+	if nfsPodImage == "" {
+		nfsPodImage = "daocloud.io/piraeus/nfs-ganesha:latest"
 	}
 
 	// Check if nfs PVC exists
@@ -121,8 +122,8 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		klog.V(2).Infof("Found existing NFS Statefulset: %s", nfsSTSName)
 	} else {
 		klog.V(2).Infof("Creating NFS Statefulset: %s", nfsSTSName)
-		hostPathType := corev1.HostPathDirectoryOrCreate
-		mountPropagationMode := corev1.MountPropagationBidirectional
+		// hostPathType := corev1.HostPathDirectoryOrCreate
+		// mountPropagationMode := corev1.MountPropagationBidirectional
 		nfsSTSDef := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: nfsSTSName,
@@ -161,20 +162,20 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 						Containers: []corev1.Container{
 							{
 								Name:  "export",
-								Image: nfsServerImage,
-								ImagePullPolicy: corev1.PullAlways,
-								SecurityContext: &corev1.SecurityContext{
-									Privileged: Ptr(true),
-								},
+								Image: nfsPodImage,
+								ImagePullPolicy: corev1.PullAlways, // for test 
 								// SecurityContext: &corev1.SecurityContext{
-								// 	Capabilities: &corev1.Capabilities{
-								// 		Add: []corev1.Capability{
-								// 			"SYS_ADMIN",
-								// 			"SETPCAP",
-								// 			"DAC_READ_SEARCH",
-								// 		},
-								// 	},
+								// 	Privileged: Ptr(true),
 								// },
+								SecurityContext: &corev1.SecurityContext{
+									Capabilities: &corev1.Capabilities{
+										Add: []corev1.Capability{
+											"SYS_ADMIN",
+											"SETPCAP",
+											"DAC_READ_SEARCH",
+										},
+									},
+								},
 								Env: []corev1.EnvVar{
 									{
 										Name: "HOSTS_ALLOW",
@@ -209,15 +210,15 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 									SuccessThreshold: 3,
 								},
 								VolumeMounts: []corev1.VolumeMount{
-									{
-										Name:			  "volumes",
-										MountPath:		  "/volumes",
-										MountPropagation: &mountPropagationMode,
-									},
-									{
-										Name:	   "data",
-										MountPath: "/volumes/" + volumeID,
-									},
+									// {
+									// 	Name:			  "volumes",
+									// 	MountPath:		  "/volumes",
+									// 	MountPropagation: &mountPropagationMode,
+									// },
+									// {
+									// 	Name:	   "data",
+									// 	MountPath: "/volumes/" + volumeID,
+									// },
 									{
 										Name:	   "data",
 										MountPath: "/export",
@@ -226,15 +227,15 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 							},
 						},
 						Volumes: []corev1.Volume{
-							{
-								Name: "volumes", 
-								VolumeSource: corev1.VolumeSource{
-									HostPath: &corev1.HostPathVolumeSource{
-										Path: "/var/lib/csi-nfs-export/volumes/",
-										Type: &hostPathType,
-									},
-								},
-							},
+							// {
+							// 	Name: "volumes", 
+							// 	VolumeSource: corev1.VolumeSource{
+							// 		HostPath: &corev1.HostPathVolumeSource{
+							// 			Path: "/var/lib/csi-nfs-export/volumes/",
+							// 			Type: &hostPathType,
+							// 		},
+							// 	},
+							// },
 							{
 								Name: "data",
 								VolumeSource: corev1.VolumeSource{
@@ -257,9 +258,9 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	// Wait for Pod to be ready
 	nfsPodName := nfsSTSName + "-0"
-	// nfsServer, _ := ns.Driver.clientSet.CoreV1().Pods(dataNamespace).Get(context.TODO(), nfsPodName, metav1.GetOptions{})
-	// nfsServerUid:= nfsServer.ObjectMeta.UID
-	// klog.V(2).Infof("Backend Pod UID is: \"%s\"", nfsServerUid )
+	nfsPod, _ := ns.Driver.clientSet.CoreV1().Pods(dataNamespace).Get(context.TODO(), nfsPodName, metav1.GetOptions{})
+	nfsPodUID:= nfsPod.ObjectMeta.UID
+	klog.V(2).Infof("Backend Pod UID is: \"%s\"", nfsPodUID )
 
 	klog.V(2).Infof("Waiting for Pod to be ready: %s", nfsPodName)
 	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsPodName, 5 * time.Minute)
@@ -272,6 +273,8 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	klog.V(2).Infof("App Pod Namespace is: %s", appPodNamespace)
 
 	// Mount nfs export path for local path
+
+	// Make sure targetPath is ready
 	notMnt, err := ns.mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -288,8 +291,44 @@ func (ns *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// Mount local first, if fails, then mount remote
-	source := "/volumes/" + volumeID
-	if dirExists(source) {
+	// source := "/volumes/" + volumeID
+	// source := fmt.Sprintf("/var/snap/microk8s/common/var/lib/kubelet/pods/%s/volumes/kubernetes.io~csi/pvc-%s/mount", nfsPodUID, dataPVCUID)
+
+	// Find kubelet root dir
+	kubeletRoot := os.Getenv("KUBELET_ROOT")
+	
+	// Find source dir
+	source := ""
+	podVolumeDir := fmt.Sprintf("%s/pods/%s/volumes/", kubeletRoot, nfsPodUID )
+	subdirs, err := os.ReadDir( podVolumeDir )
+    if err != nil {
+        klog.V(2).Infof("Failed to read pod volume dir: %s", err)
+    } else {
+		for _, d := range subdirs {
+			klog.V(2).Infof("Check pod volume subdir: %s", d.Name())
+			dataPVMountPoint1 := fmt.Sprintf("%s/%s/pvc-%s", podVolumeDir, d.Name(), dataPVCUID )
+			dataPVMountPoint2 := dataPVMountPoint1 + "/mount"
+			switch d.Name() {
+			case "kubernetes.io~secret": 
+				continue
+			case "kubernetes.io~configmap":
+				continue
+			case "kubernetes.io~empty-dir":
+				continue
+			case "kubernetes.io~downward-api":
+				continue
+			case "kubernetes.io~csi": // for csi drivers
+				source = dataPVMountPoint2
+				break
+			default: // for intree drivers
+				source = dataPVMountPoint1
+				break
+			}
+		}
+	}
+	klog.V(2).Infof("Local source path is : %s", source)
+	notMnt, _ = mount.IsNotMountPoint(ns.mounter, source)
+	if ! notMnt {
 		err = ns.mounter.Mount(source, targetPath, "", []string{"bind"})
 		if err == nil {
 			appPod, err := ns.Driver.clientSet.CoreV1().Pods(appPodNamespace).Get(context.TODO(), appPodName, metav1.GetOptions{})
@@ -426,7 +465,7 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 		return &csi.NodeUnpublishVolumeResponse{}, nil
 	} 
 
-	// Check if there is still any application POD using the nfs PVC 
+	// Check if there is still any application POD using the NFS PVC 
 	nfsPVCName :=  nfsPV.Spec.ClaimRef.Name
 	nfsPVCNamespace :=  nfsPV.Spec.ClaimRef.Namespace
 	klog.V(2).Infof("Frontend PVC Namespace is: %s", nfsPVCNamespace )
@@ -482,19 +521,18 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	err = waitForPodRunning(ns.Driver.clientSet, dataNamespace, nfsPodName, 5 * time.Minute)
 
 	// Unmount the local source path
-	localSourcePath := "/volumes/" + volumeID
-	klog.V(2).Infof("Local Path is: %s", localSourcePath)
-	if dirExists(localSourcePath) {
-		klog.V(2).Infof("NodeUnpublishVolume: unmounting volume %s on %s", volumeID, localSourcePath)
-		err = mount.CleanupMountPoint(localSourcePath, ns.mounter, true /*extensiveMountPointCheck*/)
-		if err != nil {
-			klog.V(2).Infof("NodeUnpublishVolume: failed to unmount volume %s on %s", volumeID, localSourcePath)
-		}
-		klog.V(2).Infof("NodeUnpublishVolume: unmount volume %s on %s successfully", volumeID, localSourcePath)
-	} else {
-		klog.V(2).Infof("Local Path does not exist: %s", localSourcePath)
-	}
-
+	// localSourcePath := "/volumes/" + volumeID
+	// klog.V(2).Infof("Local Path is: %s", localSourcePath)
+	// if dirExists(localSourcePath) {
+	// 	klog.V(2).Infof("NodeUnpublishVolume: unmounting volume %s on %s", volumeID, localSourcePath)
+	// 	err = mount.CleanupMountPoint(localSourcePath, ns.mounter, true /*extensiveMountPointCheck*/)
+	// 	if err != nil {
+	// 		klog.V(2).Infof("NodeUnpublishVolume: failed to unmount volume %s on %s", volumeID, localSourcePath)
+	// 	}
+	// 	klog.V(2).Infof("NodeUnpublishVolume: unmount volume %s on %s successfully", volumeID, localSourcePath)
+	// } else {
+	// 	klog.V(2).Infof("Local Path does not exist: %s", localSourcePath)
+	// }
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 

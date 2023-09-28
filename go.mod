@@ -1,4 +1,4 @@
-module github.com/rafflescity/csi-driver-nfs-export
+module github.com/piraeusdatastore/csi-driver-nfs-export
 
 go 1.18
 

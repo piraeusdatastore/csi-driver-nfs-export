@@ -20,7 +20,7 @@ import (
 	"flag"
 	"os"
 	"k8s.io/klog/v2"
-	"github.com/rafflescity/csi-driver-nfs-export/pkg/nfsexport"
+	"github.com/piraeusdatastore/csi-driver-nfs-export/pkg/nfsexport"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/rest"
